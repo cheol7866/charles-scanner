@@ -1,0 +1,31 @@
+name: Charles Daily Scanner
+
+on:
+  schedule:
+    # 매일 한국시간 23:30 = UTC 14:30
+    - cron: '30 14 * * 1-5'   # 월~금만 실행 (주말 제외)
+  workflow_dispatch:            # 수동 실행 버튼도 활성화
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90         # 최대 90분
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Python 설치
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: 패키지 설치
+        run: pip install -r requirements.txt
+
+      - name: 스캐너 실행
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GMAIL_APP_PW: ${{ secrets.GMAIL_APP_PW }}
+          GMAIL_SENDER: ${{ secrets.GMAIL_SENDER }}
+        run: python scanner.py
