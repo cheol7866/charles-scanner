@@ -1,5 +1,5 @@
 """
-APEX v8.2 — 프리마켓 폭등 전략 센터 (ATR 손절 + 포지션 사이징 + 진입 타이밍 포함)
+APEX v8.6 — 프리마켓 폭등 전략 센터 (ATR 손절 + 포지션 사이징 + 진입 타이밍 포함)
 의존 패키지: pip install streamlit yfinance pandas finvizfinance
 실행: streamlit run apex_v82_full.py
 """
@@ -11,8 +11,8 @@ import pandas as pd
 # ──────────────────────────────────────────────
 # 화면 설정
 # ──────────────────────────────────────────────
-st.set_page_config(page_title="APEX v8.2 전략 센터", layout="wide")
-st.title("🚀 APEX v8.2 — Overnight Gap Play 전략 센터")
+st.set_page_config(page_title="APEX v8.6 전략 센터", layout="wide")
+st.title("🚀 APEX v8.6 — Overnight Gap Play 전략 센터")
 st.caption(
     "전략: After-market 촉매 확인 후 진입 → 다음날 Pre-market 갭업 시 청산 | "
     "Float 소형 + SI 높음 + SMA200 위 + 강한 촉매 = 핵심 조건"
