@@ -3,7 +3,7 @@ import yfinance as yf
 import pandas as pd
 
 # 1. 화면 설정
-st.set_page_config(page_title="APEX v8.2 전략 가이드 대시보드", layout="wide")
+st.set_page_config(page_title="APEX v8.2", page_icon="🧨", layout="wide")
 
 st.title("🚀 APEX v8.2 프리마켓 폭등 전략 센터")
 st.sidebar.header("🕹️ 분석실")
