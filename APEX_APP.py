@@ -2,114 +2,110 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 
-# 1. 앱 기본 설정
-st.set_page_config(page_title="APEX 스캐너 v8.5", layout="wide")
+# 1. 화면 설정
+st.set_page_config(page_title="APEX v8.2 전략 가이드 대시보드", layout="wide")
 
-st.title("🚀 APEX v8.5 프리마켓 폭등 전략 센터")
+st.title("🚀 APEX v8.2 프리마켓 폭등 전략 센터")
+st.sidebar.header("🕹️ 분석실")
+ticker = st.sidebar.text_input("분석할 티커 입력", value="").upper()
 
-# 2. 데이터 가져오기 함수 (안전 모드)
-def get_safe_data(symbol):
-    ticker = yf.Ticker(symbol)
-    try:
-        # 에러 방지를 위해 info 데이터만 따로 추출
-        info = ticker.info
-        if not info: info = {}
-    except:
-        info = {}
-    return ticker, info
-
-# 사이드바 입력창
-st.sidebar.markdown("### 🕹️ 분석실")
-ticker_input = st.sidebar.text_input("분석할 티커 입력", "NVDA").strip().upper()
-
-if ticker_input:
-    st.markdown(f"## 🔍 {ticker_input} 정밀 팩트체크 리포트")
+if ticker:
+    st.subheader(f"🔍 {ticker} 정밀 팩트체크 리포트")
     
-    with st.spinner('데이터를 가져오는 중입니다...'):
-        ticker, info = get_safe_data(ticker_input)
+    try:
+        stock = yf.Ticker(ticker)
+        info = stock.info
+        
+        # 2. 상단 3대 핵심 지표 (수치 + 가이드)
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            avg_vol = info.get('averageVolume10days', 1)
+            curr_vol = info.get('regularMarketVolume', 0)
+            rvol = curr_vol / avg_vol if avg_vol > 0 else 0
+            st.metric("📊 상대 거래량 (RVOL)", f"{rvol:.2f}x")
+            st.caption("**[의미]** 평소보다 돈이 얼마나 들어왔나?")
+            if rvol > 2.0: 
+                st.success("✅ **폭등 신호:** 세력이 종가 매집 중!")
+            elif rvol > 1.5:
+                st.warning("⚠️ **주의:** 수급이 붙기 시작함.")
+            else:
+                st.info("⚪ **보통:** 세력 개입 증거 부족.")
 
-        # 데이터가 아예 없는 경우 (서버 차단 등)
-        if not info and ticker_input != "":
-            st.error("⚠️ 야후 서버에서 접속을 제한했습니다. 3~5분 뒤에 다시 시도하거나 다른 티커를 입력해 보세요.")
-        else:
-            try:
-                # 3. 데이터 추출
-                current_price = info.get('currentPrice', info.get('regularMarketPrice', 0))
-                if current_price == 0:
-                    hist_1d = ticker.history(period="1d")
-                    current_price = hist_1d['Close'].iloc[-1] if not hist_1d.empty else 0
+        with col2:
+            float_shares = info.get('floatShares', 0)
+            st.metric("🎈 유동주식수 (Float)", f"{float_shares/1e6:.1f}M")
+            st.caption("**[의미]** 몸무게가 가벼운가? (주식 수)")
+            if float_shares < 20e6:
+                st.success("✅ **폭등 신호:** 가벼워서 150% 튈 수 있음!")
+            elif float_shares < 50e6:
+                st.info("⚪ **보통:** 적절한 중소형주 체급.")
+            else:
+                st.error("❌ **무거움:** 폭등시키기엔 너무 무거움.")
 
-                volume = info.get('regularMarketVolume', 0)
-                avg_volume_10d = info.get('averageVolume10days', 1)
-                rvol = volume / avg_volume_10d if avg_volume_10d > 0 else 0
+        with col3:
+            si_ratio = info.get('shortPercentOfFloat', 0) * 100
+            st.metric("🧨 공매도 잔고 (SI%)", f"{si_ratio:.1f}%")
+            st.caption("**[의미]** 숏 스퀴즈(폭발) 연료가 충분한가?")
+            if si_ratio > 15:
+                st.success("✅ **폭등 신호:** 숏 스퀴즈 탄약 완비!")
+            elif si_ratio > 10:
+                st.warning("⚠️ **주의:** 공매도가 쌓여 있음.")
+            else:
+                st.info("⚪ **낮음:** 폭발적인 반등 확률 낮음.")
 
-                float_shares = info.get('floatShares', 0)
-                float_m = float_shares / 1000000 if float_shares else 0
+        st.divider()
 
-                short_percent = info.get('shortPercentOfFloat', 0)
-                si_percent = short_percent * 100 if short_percent else 0
+        # 3. 하단 정밀 체크리스트
+        c1, c2 = st.columns(2)
+        
+        with c1:
+            st.write("### 📂 1단계: 뉴스 & 공시 (재료 체크)")
+            st.info("💡 **체크:** 뉴스 제목에 **'Offering', 'S-3', 'F-3'** 단어가 보이면 무조건 패스하세요!")
+            news_list = stock.news
+            if news_list:
+                for item in news_list[:5]:
+                    title = item.get('title', '제목 없음')
+                    link = item.get('link', '#')
+                    st.write(f"- [{title}]({link})")
+            else:
+                st.write("최근 뉴스가 없습니다.")
 
-                # 4. 기술적 지표 (SMA200, VWAP)
-                hist_1y = ticker.history(period="1y")
-                sma200 = hist_1y['Close'].rolling(window=200).mean().iloc[-1] if len(hist_1y) >= 200 else None
+        with c2:
+            st.write("### 📊 2단계: 세력 수급 (다크풀 체크)")
+            st.info("💡 **체크:** 아래 링크 클릭 후 **'Dark Pool %'**가 **50% 이상**인지 확인하세요.")
+            st.markdown(f"**[👉 {ticker} 실시간 다크풀 데이터 확인하기](https://chartexchange.com/symbol/nasdaq-{ticker}/stats/)**")
+            
+            st.write("")
+            st.write("### 📈 3단계: 기술적 위치")
+            st.markdown(f"**[👉 Finviz에서 {ticker} 차트/지표 정밀 확인](https://finviz.com/quote.ashx?t={ticker})**")
 
-                hist_today = ticker.history(period="1d", interval="1m")
-                if not hist_today.empty:
-                    hist_today['Typical_Price'] = (hist_today['High'] + hist_today['Low'] + hist_today['Close']) / 3
-                    vwap_series = (hist_today['Typical_Price'] * hist_today['Volume']).cumsum() / hist_today['Volume'].cumsum()
-                    current_vwap = vwap_series.iloc[-1]
-                else:
-                    current_vwap = None
+        # 4. 찰스님 전용 전략 요약 (Summary)
+        st.divider()
+        st.subheader("💡 APEX v8.2 실전 필살기 가이드 (찰스님 전용)")
+        
+        col_sum1, col_sum2, col_sum3 = st.columns(3)
+        
+        with col_sum1:
+            st.info("🎯 **폭등 후보 체급**\n\n**Float 10M ~ 20M**\n\n몸무게가 가벼워야 적은 돈으로도 150% 수직 상승이 가능합니다.")
+            
+        with col_sum2:
+            st.error("🤫 **세력 매집 증거**\n\n**다크풀 60% 이상**\n\n세력이 뒤에서 물량을 꽉 쥐고 '품귀 현상'을 세팅 완료했다는 증거입니다.")
+            
+        with col_sum3:
+            st.success("🧨 **폭발 가속도**\n\n**SI% 15% 이상**\n\n주가가 오를 때 공매도 세력이 '손절 매수'를 하며 폭등을 더 부채질합니다.")
 
-                # 5. 화면 출력 (필수 3요소)
-                col1, col2, col3 = st.columns(3)
-                with col1:
-                    st.metric("📊 상대 거래량 (RVOL)", f"{rvol:.2f}x")
-                    if rvol >= 2.0: st.success("✅ 베스트: 수급 폭발!")
-                    else: st.info("⭕ 수급 관찰")
+        st.warning("⚠️ **최종 판단:** 위 3가지가 모두 일치하고, 오늘 밤 '호재 뉴스'가 있다면 승부수를 던질 타이밍입니다! `[추론]`")
 
-                with col2:
-                    st.metric("🎈 유동주식수 (Float)", f"{float_m:.1f}M")
-                    if 0 < float_m <= 20: st.success("✅ 합격: 가벼움!")
-                    else: st.error("❌ 무거움: 주의")
+        st.divider()
 
-                with col3:
-                    st.metric("🧨 공매도 잔고 (SI%)", f"{si_percent:.1f}%")
-                    if si_percent >= 15: st.success("✅ 신호: 숏 스퀴즈 가능!")
-                    else: st.info("⭕ 낮음: 반등 확률 낮음")
+        # 5. Grok 자동 조립 프롬프트
+        st.write("### 🤖 5단계: Grok에게 최종 검증 시키기")
+        grok_prompt = f"""너는 프리마켓 폭등 추적 AI APEX v8.2이다. 대상 티커: {ticker}. 이 종목의 8-K 공시와 X(트위터) 반응을 뒤져서 내일 아침 +50% 폭등 가능성을 100점 만점으로 점수 매겨줘. 특히 오늘 밤이나 내일 새벽에 터질 호재가 있는지 집중 분석해."""
+        st.code(grok_prompt, language="text")
 
-                st.markdown("---")
-                
-                # 6. 기술적 안전장치
-                st.markdown("### 🛡️ 기술적 안전장치")
-                t_col1, t_col2 = st.columns(2)
-                with t_col1:
-                    if sma200:
-                        if current_price > sma200: st.success(f"✅ SMA200 위 ({current_price:.2f} > {sma200:.2f})")
-                        else: st.error(f"❌ SMA200 아래 ({current_price:.2f} < {sma200:.2f})")
-                    else: st.warning("⚠️ SMA200 계산 불가")
-                with t_col2:
-                    if current_vwap:
-                        if current_price > current_vwap: st.success(f"✅ VWAP 지지 ({current_price:.2f} > {current_vwap:.2f})")
-                        else: st.error(f"❌ VWAP 이탈 ({current_price:.2f} < {current_vwap:.2f})")
-                    else: st.warning("⚠️ VWAP 데이터 없음")
+    except Exception as e:
+        st.error(f"데이터를 가져오는 중 오류가 발생했습니다: {e}")
 
-                st.markdown("---")
-
-                # 7. 외부 링크 (다크풀 주소 수정 완료)
-                row1_col1, row1_col2 = st.columns(2)
-                with row1_col1:
-                    st.markdown("### 📂 1단계: 뉴스 & 공시")
-                    st.markdown(f"- [야후 뉴스](https://finance.yahoo.com/quote/{ticker_input}/news)")
-                    st.markdown(f"- [SEC 8-K 공시](https://www.sec.gov/cgi-bin/browse-edgar?CIK={ticker_input}&action=getcompany)")
-                with row1_col2:
-                    st.markdown("### 📊 2단계: 다크풀")
-                    st.markdown(f"👉 [{ticker_input} 다크풀 확인](https://stocksera.pythonanywhere.com/ticker/short_volume/{ticker_input}/)")
-
-                st.markdown("---")
-                st.markdown("### 🎯 5단계: Grok에게 최종 검증 시키기")
-                grok_prompt = f"너는 폭등 추적 AI APEX v8.5이다. 티커: {ticker_input}. 분석해줘."
-                st.code(grok_prompt, language="text")
-
-            except Exception as e:
-                st.warning("일부 데이터를 가져오지 못했습니다. (서버 응답 지연)")
+else:
+    st.info("왼쪽 사이드바에 티커를 입력하면 팩트체크 가이드가 나타납니다.")
