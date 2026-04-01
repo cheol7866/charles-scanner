@@ -715,7 +715,31 @@ with tab_squeeze:
 # TAB 3 — 개별 종목 정밀 분석 (v10.0 핵심)
 # ══════════════════════════════════════════════════════════════════
 with tab_analyze:
-    st.header("🔍 개별 종목 정밀 팩트체크 — APEX 120점 분석")
+    st.header("🔍 개별 종목 정밀 팩트체크")
+
+    # ── 전략 선택 (최상단) ────────────────────────────────
+    strategy_mode = st.radio(
+        "📌 **어떤 전략으로 분석할 종목인가요?**",
+        ["🔭 APEX Overnight (After-market 진입 → Pre-market 청산)",
+         "🗜️ Squeeze Breakout (정배열 + 응축 → 정규장 돌파 진입)"],
+        index=0,
+        horizontal=True,
+        help="스크리너에서 어느 탭으로 발굴했는지에 따라 선택하세요. 채점 기준이 완전히 달라집니다."
+    )
+    IS_APEX = "APEX" in strategy_mode
+
+    if IS_APEX:
+        st.info(
+            "**🔭 APEX Overnight 모드** — Float·SI·RVOL 높음·SMA200·VWAP·촉매 기준으로 **120점** 채점합니다.\n\n"
+            "⭐ **Main:** SMA200, VWAP, Float, SI%, RVOL, ATR14  |  "
+            "Sub: RSI(2), RSI(14), BB Width, BB %B"
+        )
+    else:
+        st.success(
+            "**🗜️ Squeeze Breakout 모드** — BB Width·RVOL 낮음·정배열·가격 압축 기준으로 **100점** 채점합니다.\n\n"
+            "⭐ **Main:** BB Width, RVOL <0.75, 정배열(SMA20/50/200), 20일 고저범위  |  "
+            "Sub: BB %B, 베타, 기관 보유"
+        )
 
     ticker = st.text_input(
         "분석할 티커 입력", value="", placeholder="예: ASTS, MSTR, ALOY"
@@ -764,51 +788,240 @@ with tab_analyze:
         high_52w = info.get("fiftyTwoWeekHigh")
         low_52w  = info.get("fiftyTwoWeekLow")
 
-        # ── 촉매 입력 UI ──────────────────────────────────
-        st.markdown("### 🔥 촉매 점수 입력 (수동 — 최대 25점)")
-        st.caption("진입 전 Grok/EDGAR에서 확인 후 아래 항목을 선택하세요. **촉매 없이는 85점 달성 불가.**")
+        # ══════════════════════════════════════════════════════
+        # APEX 모드 vs Squeeze 모드 분기
+        # ══════════════════════════════════════════════════════
 
-        cat_c1, cat_c2, cat_c3 = st.columns(3)
-        with cat_c1:
-            catalyst_type = st.selectbox(
-                "촉매 종류",
-                ["없음 (0점)", "소문/기대감 (5점)", "뉴스/일반 공시 (10점)",
-                 "8-K 호재/계약/FDA (20점)", "어닝 서프라이즈 (20점)", "임상 성공 (25점)"],
-                index=0,
-                help="EDGAR, 뉴스, Grok 확인 후 선택"
-            )
-        with cat_c2:
-            dilution_check = st.checkbox(
-                "🚨 Offering/Dilution 공시 확인됨",
-                value=False,
-                help="체크 시 -30점 페널티. 진입 불가 수준"
-            )
-        with cat_c3:
-            cat_pts_map = {
-                "없음 (0점)": 0,
-                "소문/기대감 (5점)": 5,
-                "뉴스/일반 공시 (10점)": 10,
-                "8-K 호재/계약/FDA (20점)": 20,
-                "어닝 서프라이즈 (20점)": 20,
-                "임상 성공 (25점)": 25,
-            }
-            catalyst_pts = cat_pts_map[catalyst_type]
-            catalyst_strength = (
-                "strong"   if catalyst_pts >= 20 else
-                "moderate" if catalyst_pts >= 10 else
-                "none"
-            )
-            st.metric("촉매 점수", f"+{catalyst_pts}점")
-            if dilution_check:
-                st.error("🚨 Dilution 감지 — -30점 페널티 적용. 즉시 패스.")
-            elif catalyst_pts >= 20:
-                st.success("✅ 강한 촉매 확인")
-            elif catalyst_pts > 0:
-                st.warning("⚠️ 촉매 있으나 강도 약함")
+        if not IS_APEX:
+            # ────────────────────────────────────────────────
+            # 🗜️ SQUEEZE 전용 100점 스코어링
+            # ────────────────────────────────────────────────
+            st.divider()
+            st.markdown("### 🗜️ Squeeze Breakout 전용 점수 (100점 만점)")
+            st.caption("**진입 기준: 70점 이상 + 돌파 캔들 + 거래량 급증 동시 확인 후 정규장 진입**")
+
+            sq_score_box = [0]
+            sq_detail    = {}
+
+            def sq_add(label, tag, result, pts, reason):
+                if result is True:
+                    sq_score_box[0] += pts
+                    sq_detail[label] = (True,  pts, reason, tag)
+                elif result == "partial":
+                    sq_score_box[0] += pts
+                    sq_detail[label] = ("partial", pts, reason, tag)
+                elif result is False:
+                    sq_detail[label] = (False, 0,   reason, tag)
+                else:
+                    sq_detail[label] = (None,  0,   "데이터 없음", tag)
+
+            # ① BB Width — Main 30점
+            if bb_width is not None:
+                if bb_width < 5:
+                    sq_add("BB Width < 5%",    "Main", True,      30, f"{bb_width:.1f}% — 극도 응축, 폭발 임박!")
+                elif bb_width < 10:
+                    sq_add("BB Width < 10%",   "Main", True,      30, f"{bb_width:.1f}% — 응축 구간 ✅")
+                elif bb_width < 20:
+                    sq_add("BB Width 10~20%",  "Main", "partial", 15, f"{bb_width:.1f}% — 부분 응축")
+                else:
+                    sq_add("BB Width > 20%",   "Main", False,      0, f"{bb_width:.1f}% — 확장 구간, Squeeze 아님 ❌")
             else:
-                st.error("❌ 촉매 없음 — 85점 달성 불가")
+                sq_add("BB Width",             "Main", None,       30, "")
 
-        # ── 120점 스코어 계산 ─────────────────────────────
+            # ② RVOL 낮음 — Main 20점
+            if rvol:
+                if rvol < 0.5:
+                    sq_add("RVOL < 0.5 (극소멸)", "Main", True,   20, f"{rvol:.2f}x — 거래량 극도 소멸, 폭풍 전야")
+                elif rvol < 0.75:
+                    sq_add("RVOL < 0.75 (소멸)",  "Main", True,   20, f"{rvol:.2f}x — 거래량 소멸 ✅")
+                elif rvol < 1.0:
+                    sq_add("RVOL 0.75~1.0",       "Main", "partial", 10, f"{rvol:.2f}x — 거래량 감소 중")
+                else:
+                    sq_add("RVOL > 1.0 (부적합)", "Main", False,  0, f"{rvol:.2f}x — 거래량 소멸 아님 ❌")
+            else:
+                sq_add("RVOL",                    "Main", None,   20, "")
+
+            # ③ 정배열 SMA20 > SMA50 > SMA200 — Main 20점
+            if sma200 and current_price:
+                try:
+                    sma20_val = float(hist_daily["Close"].rolling(20).mean().iloc[-1]) if len(hist_daily) >= 20 else None
+                    sma50_val = float(hist_daily["Close"].rolling(50).mean().iloc[-1]) if len(hist_daily) >= 50 else None
+                    if sma20_val and sma50_val:
+                        full_align = (current_price > sma20_val > sma50_val > sma200)
+                        part_align = (current_price > sma200)
+                        if full_align:
+                            sq_add("정배열 (SMA20>50>200)", "Main", True,      20,
+                                   f"완전 정배열 ✅ | SMA20:{sma20_val:.2f} SMA50:{sma50_val:.2f} SMA200:{sma200:.2f}")
+                        elif part_align:
+                            sq_add("SMA200 위 (부분 정배열)", "Main", "partial", 10,
+                                   f"SMA200 위지만 완전 정배열 미충족")
+                        else:
+                            sq_add("정배열 미충족", "Main", False, 0, "SMA200 아래 — Squeeze 진입 금지")
+                    else:
+                        sq_add("정배열", "Main", None, 20, "")
+                except Exception:
+                    sq_add("정배열", "Main", None, 20, "")
+            else:
+                sq_add("정배열", "Main", None, 20, "")
+
+            # ④ 20일 고저범위 — Main 15점
+            if len(hist_daily) >= 20:
+                try:
+                    h20 = hist_daily["High"].tail(20).max()
+                    l20 = hist_daily["Low"].tail(20).min()
+                    rng20 = (h20 - l20) / h20 * 100 if h20 else None
+                    if rng20 is not None:
+                        if rng20 < 5:
+                            sq_add("20일 고저범위 < 5%",  "Main", True,      15, f"{rng20:.1f}% — 가격 극도 압축 ✅")
+                        elif rng20 < 10:
+                            sq_add("20일 고저범위 < 10%", "Main", True,      15, f"{rng20:.1f}% — 가격 압축 ✅")
+                        elif rng20 < 15:
+                            sq_add("20일 고저범위 10~15%","Main", "partial", 8,  f"{rng20:.1f}% — 부분 압축")
+                        else:
+                            sq_add("20일 고저범위 > 15%", "Main", False,      0,  f"{rng20:.1f}% — 압축 아님 ❌")
+                except Exception:
+                    sq_add("20일 고저범위", "Main", None, 15, "")
+            else:
+                sq_add("20일 고저범위", "Main", None, 15, "")
+
+            # ⑤ BB %B 위치 — Sub 5점
+            if bb_pctb is not None:
+                if bb_pctb < 20:
+                    sq_add("BB %B < 20% (하단 근처)", "Sub", True,      5, f"{bb_pctb:.1f}% — 반등 준비 위치 ✅")
+                elif bb_pctb < 50:
+                    sq_add("BB %B 20~50%",            "Sub", "partial", 3, f"{bb_pctb:.1f}% — 중하단 구간")
+                elif bb_pctb > 80:
+                    sq_add("BB %B > 80% (위험)",      "Sub", False,     0, f"{bb_pctb:.1f}% — 상단 근처, 진입 위험 ❌")
+                else:
+                    sq_add("BB %B 50~80%",            "Sub", False,     0, f"{bb_pctb:.1f}% — 중상단 구간")
+            else:
+                sq_add("BB %B", "Sub", None, 5, "")
+
+            # ⑥ RSI(14) Sub 보너스 (Squeeze에서는 중립~과매도 선호)
+            if rsi14 is not None:
+                if 30 <= rsi14 <= 55:
+                    sq_add("RSI(14) 중립~적정 (30~55)", "Sub", True,  5, f"RSI(14)={rsi14:.1f} — Squeeze 이상적 RSI 구간")
+                elif rsi14 > 70:
+                    sq_add("RSI(14) 과매수",            "Sub", False, 0, f"RSI(14)={rsi14:.1f} — 과매수, 돌파 직후일 가능성")
+                else:
+                    sq_add("RSI(14)",                   "Sub", "partial", 2, f"RSI(14)={rsi14:.1f}")
+            else:
+                sq_add("RSI(14)", "Sub", None, 5, "")
+
+            # ⑦ 베타 0.5~1.5 Sub 5점
+            beta_val = info.get("beta")
+            if beta_val is not None:
+                if 0.5 <= beta_val <= 1.5:
+                    sq_add("베타 0.5~1.5 (적정)", "Sub", True,      5, f"베타={beta_val:.2f} — 안정적 변동성 ✅")
+                elif beta_val < 0.5:
+                    sq_add("베타 < 0.5 (너무 낮음)", "Sub", False,   0, f"베타={beta_val:.2f} — 움직임 부족")
+                else:
+                    sq_add("베타 > 1.5 (고변동)", "Sub", "partial",  3, f"베타={beta_val:.2f} — 변동성 높음 주의")
+            else:
+                sq_add("베타", "Sub", None, 5, "")
+
+            sq_score = max(0, min(sq_score_box[0], 100))
+
+            # ── Squeeze 점수 표시 ─────────────────────────
+            sq_h1, sq_h2 = st.columns([1, 2])
+            with sq_h1:
+                if sq_score >= 80:
+                    st.metric("🏆 Squeeze 점수", f"{sq_score}/100")
+                    st.success("🔥 **최우선 돌파 후보** — 거래량 급증 캔들 대기!")
+                elif sq_score >= 70:
+                    st.metric("✅ Squeeze 점수", f"{sq_score}/100")
+                    st.success("✅ **돌파 대기 구간** — 차트 모니터링 시작")
+                elif sq_score >= 55:
+                    st.metric("⚠️ Squeeze 점수", f"{sq_score}/100")
+                    st.warning("⚠️ **부분 충족** — 추가 확인 필요")
+                else:
+                    st.metric("❌ Squeeze 점수", f"{sq_score}/100")
+                    st.error("❌ **Squeeze 조건 미달** — 패스 권장")
+
+                # 돌파 신호 체크리스트
+                st.write("")
+                st.markdown("**🎯 돌파 진입 체크리스트**")
+                st.markdown("- ☐ 거래량 평소 2배 이상 급증\n- ☐ 저항선 돌파 캔들 확인\n- ☐ 돌파 후 되돌림 없이 유지\n- ☐ 정규장 진입 (AH/PM 절대 금지)")
+
+            with sq_h2:
+                st.markdown("**📊 Squeeze 조건별 점수 내역**")
+                main_items = [(l, r, p, n, t) for l, (r, p, n, t) in sq_detail.items() if t == "Main"]
+                sub_items  = [(l, r, p, n, t) for l, (r, p, n, t) in sq_detail.items() if t == "Sub"]
+
+                st.markdown("**⭐ Main 지표 (핵심 — 반드시 확인)**")
+                for label, result, pts, reason, _ in main_items:
+                    if result is True:
+                        st.markdown(f"✅ **[Main]** {label} **+{pts}점** — {reason}")
+                    elif result == "partial":
+                        st.markdown(f"⚠️ **[Main]** {label} **+{pts}점(부분)** — {reason}")
+                    elif result is False:
+                        st.markdown(f"❌ **[Main]** {label} **0점** — {reason}")
+                    else:
+                        st.markdown(f"⚪ **[Main]** {label} — 데이터 없음")
+
+                st.markdown("**📎 Sub 지표 (참고용)**")
+                for label, result, pts, reason, _ in sub_items:
+                    if result is True:
+                        st.markdown(f"✅ *[Sub]* {label} **+{pts}점** — {reason}")
+                    elif result == "partial":
+                        st.markdown(f"⚠️ *[Sub]* {label} **+{pts}점(부분)** — {reason}")
+                    elif result is False:
+                        st.markdown(f"❌ *[Sub]* {label} — {reason}")
+                    else:
+                        st.markdown(f"⚪ *[Sub]* {label} — 데이터 없음")
+
+            st.divider()
+
+        # 기본값 설정 (Squeeze 모드에서 catalyst_pts 미정의 방지)
+        catalyst_pts     = 0
+        catalyst_strength = "none"
+        dilution_check   = False
+
+        # ── 촉매 입력 + APEX 점수 (APEX 모드 전용) ─────────
+        if IS_APEX:
+            st.markdown("### 🔥 촉매 점수 입력 (수동 — 최대 25점)")
+            st.caption("진입 전 Grok/EDGAR에서 확인 후 아래 항목을 선택하세요. **촉매 없이는 85점 달성 불가.**")
+            cat_c1, cat_c2, cat_c3 = st.columns(3)
+            with cat_c1:
+                catalyst_type = st.selectbox(
+                    "촉매 종류",
+                    ["없음 (0점)", "소문/기대감 (5점)", "뉴스/일반 공시 (10점)",
+                     "8-K 호재/계약/FDA (20점)", "어닝 서프라이즈 (20점)", "임상 성공 (25점)"],
+                    index=0,
+                    help="EDGAR, 뉴스, Grok 확인 후 선택"
+                )
+            with cat_c2:
+                dilution_check = st.checkbox(
+                    "🚨 Offering/Dilution 공시 확인됨",
+                    value=False,
+                    help="체크 시 -30점 페널티. 진입 불가 수준"
+                )
+            with cat_c3:
+                cat_pts_map = {
+                    "없음 (0점)": 0,
+                    "소문/기대감 (5점)": 5,
+                    "뉴스/일반 공시 (10점)": 10,
+                    "8-K 호재/계약/FDA (20점)": 20,
+                    "어닝 서프라이즈 (20점)": 20,
+                    "임상 성공 (25점)": 25,
+                }
+                catalyst_pts = cat_pts_map[catalyst_type]
+                catalyst_strength = (
+                    "strong"   if catalyst_pts >= 20 else
+                    "moderate" if catalyst_pts >= 10 else
+                    "none"
+                )
+                st.metric("촉매 점수", f"+{catalyst_pts}점")
+                if dilution_check:
+                    st.error("🚨 Dilution 감지 — -30점 페널티 적용. 즉시 패스.")
+                elif catalyst_pts >= 20:
+                    st.success("✅ 강한 촉매 확인")
+                elif catalyst_pts > 0:
+                    st.warning("⚠️ 촉매 있으나 강도 약함")
+                else:
+                    st.error("❌ 촉매 없음 — 85점 달성 불가")
+
+        # ── 120점 스코어 계산 (항상 실행 — Hold Duration 등에 필요)
         score, score_detail = calc_apex_score_v10(
             float_shares, si_ratio, current_price, sma200,
             vwap, rvol, rsi2, catalyst_pts, spy_bull, dilution_check
@@ -820,49 +1033,49 @@ with tab_analyze:
             "apex_atr14": atr14,   "apex_sma200": sma200,
         })
 
-        st.divider()
-
-        # ── 120점 스코어 헤더 ─────────────────────────────
-        hdr_c1, hdr_c2 = st.columns([1, 2])
-        with hdr_c1:
-            if dilution_check:
-                st.metric("🚨 APEX 점수", f"{score}/120")
-                st.error("🚨 **즉시 패스** — Dilution 위험")
-            elif score >= 100:
-                st.metric("🏆 APEX 점수", f"{score}/120")
-                st.success("🔥 **최우선 후보** — 촉매 확인 시 승부 타이밍!")
-            elif score >= 85:
-                st.metric("✅ APEX 점수", f"{score}/120")
-                st.success("✅ **진입 권장 구간** — 손절 설정 후 진입 고려")
-            elif score >= 70:
-                st.metric("⚠️ APEX 점수", f"{score}/120")
-                st.warning("🟡 **신중 접근** — 조건 일부 미충족")
-            elif score >= 55:
-                st.metric("❌ APEX 점수", f"{score}/120")
-                st.error("🔴 **조건 미달** — APEX 기준 부적합")
-            else:
-                st.metric("🚫 APEX 점수", f"{score}/120")
-                st.error("🚫 **즉시 패스** — APEX 기준 전혀 충족 못함")
-
-            # 갭업 확률 추정
-            gap_prob = estimate_gap_prob(float_shares, si_ratio, rvol,
-                                         catalyst_strength, spy_bull, score)
-            st.metric("📈 갭업 확률 추정", f"{gap_prob}%",
-                      help="[추론] ML/백테스트 기반 아님. 조건 기반 Rule-based 추정치")
-            st.caption("⚠️ 이 수치는 통계적 백테스트가 없는 추론값입니다.")
-
-        with hdr_c2:
-            st.markdown("**📊 조건별 120점 내역**")
-            for label, (result, pts, reason) in score_detail.items():
-                if result is True:
-                    st.markdown(f"✅ {label} **+{pts}점** — {reason}")
-                elif result == "partial":
-                    st.markdown(f"⚠️ {label} **+{pts}점 (부분)** — {reason}")
-                elif result is False:
-                    pstr = f"{pts}점" if pts >= 0 else f"{pts}점 페널티"
-                    st.markdown(f"❌ {label} **{pstr}** — {reason}")
+        # ── APEX 120점 스코어 헤더 (APEX 모드에서만 표시) ─
+        if IS_APEX:
+            st.divider()
+            hdr_c1, hdr_c2 = st.columns([1, 2])
+            with hdr_c1:
+                if dilution_check:
+                    st.metric("🚨 APEX 점수", f"{score}/120")
+                    st.error("🚨 **즉시 패스** — Dilution 위험")
+                elif score >= 100:
+                    st.metric("🏆 APEX 점수", f"{score}/120")
+                    st.success("🔥 **최우선 후보** — 촉매 확인 시 승부 타이밍!")
+                elif score >= 85:
+                    st.metric("✅ APEX 점수", f"{score}/120")
+                    st.success("✅ **진입 권장 구간** — 손절 설정 후 진입 고려")
+                elif score >= 70:
+                    st.metric("⚠️ APEX 점수", f"{score}/120")
+                    st.warning("🟡 **신중 접근** — 조건 일부 미충족")
+                elif score >= 55:
+                    st.metric("❌ APEX 점수", f"{score}/120")
+                    st.error("🔴 **조건 미달** — APEX 기준 부적합")
                 else:
-                    st.markdown(f"⚪ {label} — {reason}")
+                    st.metric("🚫 APEX 점수", f"{score}/120")
+                    st.error("🚫 **즉시 패스** — APEX 기준 전혀 충족 못함")
+
+                # 갭업 확률 추정
+                gap_prob = estimate_gap_prob(float_shares, si_ratio, rvol,
+                                             catalyst_strength, spy_bull, score)
+                st.metric("📈 갭업 확률 추정", f"{gap_prob}%",
+                          help="[추론] ML/백테스트 기반 아님. 조건 기반 Rule-based 추정치")
+                st.caption("⚠️ 이 수치는 통계적 백테스트가 없는 추론값입니다.")
+
+            with hdr_c2:
+                st.markdown("**📊 조건별 120점 내역**")
+                for label, (result, pts, reason) in score_detail.items():
+                    if result is True:
+                        st.markdown(f"✅ {label} **+{pts}점** — {reason}")
+                    elif result == "partial":
+                        st.markdown(f"⚠️ {label} **+{pts}점 (부분)** — {reason}")
+                    elif result is False:
+                        pstr = f"{pts}점" if pts >= 0 else f"{pts}점 페널티"
+                        st.markdown(f"❌ {label} **{pstr}** — {reason}")
+                    else:
+                        st.markdown(f"⚪ {label} — {reason}")
 
         # Hold Duration 추천
         duration, hold_reasons, hold_col = recommend_hold(
@@ -1002,6 +1215,11 @@ with tab_analyze:
 
         # ── 핵심 수급 지표 ────────────────────────────────
         st.markdown("### 📊 핵심 수급 지표")
+        # Main/Sub 라벨 전략별 표시
+        if IS_APEX:
+            st.caption("⭐ **[Main]** Float, SI%, RVOL — APEX 진입 가부 결정 핵심  |  📎 *[Sub]* 기관보유, 숏커버일")
+        else:
+            st.caption("📎 *[Sub]* APEX 스코어 참고용 — Squeeze에서 Float·SI·RVOL은 가중치 없음. BB Width가 Main")
         m1, m2, m3, m4, m5 = st.columns(5)
 
         with m1:
@@ -1063,13 +1281,22 @@ with tab_analyze:
             st.caption(f"52주 범위: ${low_52w:.2f} ↔ ${high_52w:.2f} | 현재 위치: **{pos:.0f}%** 지점")
 
         st.divider()
-
-        # ── 기술적 지표 (SMA200, VWAP, RSI, BB) ────────────
+        # ── 기술적 분석 지표 ─────────────────────────────
         st.markdown("### 📐 기술적 분석 지표")
+        if IS_APEX:
+            st.caption(
+                "⭐ **[Main]** SMA200, VWAP, ATR14 — 진입 가부·손절 기준  |  "
+                "📎 *[Sub]* RSI(2), RSI(14), BB Width, BB %B"
+            )
+        else:
+            st.caption(
+                "⭐ **[Main]** BB Width (<10% 핵심), SMA 정배열  |  "
+                "📎 *[Sub]* RSI(2), VWAP (Squeeze에서는 참고만), SMA200 (진입 금지 필터)"
+            )
         t1, t2 = st.columns(2)
 
         with t1:
-            st.markdown("#### 🦴 현재가 vs SMA200")
+            st.markdown("#### 🦴 현재가 vs SMA200" + (" ⭐[Main]" if IS_APEX else " 📎[Sub — 진입 금지 필터]"))
             if sma200 and current_price:
                 gap = (current_price - sma200) / sma200 * 100
                 st.metric("현재가 vs SMA200", f"${current_price:.2f}",
@@ -1082,7 +1309,7 @@ with tab_analyze:
                 st.warning("⚠️ SMA200 산출 불가 (상장 200일 미만)")
 
             st.write("")
-            st.markdown("#### 🎯 현재가 vs VWAP")
+            st.markdown("#### 🎯 현재가 vs VWAP" + (" ⭐[Main]" if IS_APEX else " 📎[Sub — Squeeze 청산 참고]"))
             if vwap and current_price:
                 gv = (current_price - vwap) / vwap * 100
                 st.metric("현재가 vs VWAP", f"${current_price:.2f}",
@@ -1095,7 +1322,7 @@ with tab_analyze:
                 st.warning("⚠️ VWAP 산출 불가 — 장 마감 후. 장 중 재확인 필수.")
 
         with t2:
-            st.markdown("#### 📉 RSI 지표")
+            st.markdown("#### 📉 RSI 지표" + (" ⭐[Main: RSI(2)]" if IS_APEX else " 📎[Sub — RSI(14) 30~55 선호]"))
             r_c1, r_c2 = st.columns(2)
             with r_c1:
                 if rsi2 is not None:
@@ -1112,7 +1339,7 @@ with tab_analyze:
                     else:            st.info("⚪ 중립")
 
             st.write("")
-            st.markdown("#### 📊 볼린저 밴드 (Squeeze 감지)")
+            st.markdown("#### 📊 볼린저 밴드" + (" 📎[Sub — APEX에선 참고]" if IS_APEX else " ⭐[Main — Squeeze 핵심 지표!]"))
             if bb_upper and current_price:
                 b_c1, b_c2 = st.columns(2)
                 with b_c1:
@@ -1178,8 +1405,9 @@ with tab_analyze:
 
         st.divider()
 
-        # ── Overnight Gap Play 진입 타이밍 ───────────────
-        st.markdown("### ⏰ Overnight Gap Play 진입 타이밍 가이드")
+        # ── Overnight Gap Play 진입 타이밍 (APEX 전용) ─────
+        if IS_APEX:
+            st.markdown("### ⏰ Overnight Gap Play 진입 타이밍 가이드")
         tg1, tg2, tg3 = st.columns(3)
         with tg1:
             st.info(
@@ -1236,7 +1464,11 @@ with tab_analyze:
         st.divider()
 
         # ── 4가지 핵심 질문 Grok 프롬프트 자동 조립 ────────
-        st.markdown("### 🤖 4가지 핵심 질문 — Grok 검증 프롬프트 (자동 조립)")
+        # ── Grok 프롬프트 (전략별 분기) ───────────────────
+        if IS_APEX:
+            st.markdown("### 🤖 4가지 핵심 질문 — Grok 검증 프롬프트 (APEX Overnight 전용)")
+        else:
+            st.markdown("### 🤖 Squeeze Breakout — Grok 검증 프롬프트")
         st.caption(
             "아래 프롬프트를 Grok에 복사·붙여넣기 하면 X 모멘텀, 8-K 공시, Offering 위험, "
             "갭업 확률 4가지를 자동으로 분석받을 수 있습니다."
@@ -1263,10 +1495,30 @@ with tab_analyze:
             f"③ 최근 Offering/Dilution/Shelf 등 주가 희석 위험이 있는가? (있으면 즉시 경고)\n"
             f"④ 내일 Pre-market 갭업 가능성을 100점 만점으로 점수 매겨줘. 이유도 함께."
         )
-        st.code(grok, language="text")
+        if IS_APEX:
+            st.code(grok, language="text")
+        else:
+            # Squeeze 전용 Grok 프롬프트
+            sq_p_bbw  = f"{bb_width:.1f}%"  if bb_width  else "N/A"
+            sq_p_pctb = f"{bb_pctb:.1f}%"   if bb_pctb   else "N/A"
+            sq_p_r2   = f"{rsi2:.1f}"        if rsi2      else "N/A"
+            sq_p_r14  = f"{rsi14:.1f}"       if rsi14     else "N/A"
+            grok_sq = (
+                f"너는 Squeeze Breakout 전략 AI APEX v10.0이다. 대상 티커: {ticker}\n\n"
+                f"[Squeeze 분석 데이터]\n"
+                f"BB Width: {sq_p_bbw} | BB %B: {sq_p_pctb} | RSI(2): {sq_p_r2} | RSI(14): {sq_p_r14}\n"
+                f"RVOL: {rvol:.2f}x | SMA200: {'위' if (sma200 and current_price and current_price>sma200) else '아래'} | "
+                f"현재가: ${current_price:.2f}\n\n"
+                f"[4가지 핵심 질문]\n"
+                f"① {ticker}의 BB Width가 실제로 수렴 중인가? 최근 1개월 추세를 분석해줘.\n"
+                f"② 이 종목의 돌파 저항선은 어디인가? 최근 차트 기준으로 알려줘.\n"
+                f"③ 돌파 시 예상 타겟 가격은? 기술적 목표가 2개를 제시해줘.\n"
+                f"④ 이 종목의 Squeeze 돌파 가능성을 100점 만점으로 점수 매기고 이유를 설명해줘."
+            )
+            st.code(grok_sq, language="text")
 
     else:
-        st.info("티커를 입력하면 APEX 120점 정밀 분석이 시작됩니다.")
+        st.info("티커를 입력하면 정밀 분석이 시작됩니다.")
         st.markdown("""
 **APEX v10.0 분석 흐름 (4단계):**
 1. **[🔭 APEX 스크리너]** → SI>20% 엄격 조건으로 후보 발굴
