@@ -585,7 +585,7 @@ with tab_screen:
         with c1:
             float_f  = st.selectbox("🎈 Float", ["Under 20M", "Under 50M", "Under 100M"], 0,
                                     help="기본값 20M 유지 권장. 이상은 APEX 부적합")
-            si_f     = st.selectbox("🧨 Float Short", ["Over 20%", "Over 15%", "Over 10%"], 0,
+            si_f     = st.selectbox("🧨 Float Short", ["Over 15%", "Over 20%", "Over 10%"], 0,
                                     help="v10.0 엄격화: 기본값 20%로 상향. 숏 스퀴즈 강도 강화")
         with c2:
             sma200_f = st.selectbox("🦴 200일 SMA", ["Price above SMA200", "Any"], 0,
@@ -593,9 +593,9 @@ with tab_screen:
             rvol_f   = st.selectbox("📊 상대 거래량", ["Over 2", "Over 1.5", "Over 3", "Any"], 0,
                                     help="세력 개입 기준. Over 2 이상 권장")
         with c3:
-            avgvol_f = st.selectbox("💧 평균 거래량", ["Over 1M", "Over 500K", "Over 200K"], 0,
+            avgvol_f = st.selectbox("💧 평균 거래량", ["Over 500K", "Over 1M", "Over 200K"], 0,
                                     help="v10.0 엄격화: After-hours 유동성 보장 강화")
-            price_f  = st.selectbox("💲 주가", ["Over $2", "Over $1", "Over $5", "Over $10"], 0,
+            price_f  = st.selectbox("💲 주가", ["Over $1", "Over $2", "Over $5", "Over $10"], 0,
                                     help="$1 이하 페니스탁 제외")
 
     if st.button("🚀 APEX 스크리너 실행", type="primary", use_container_width=True):
@@ -638,10 +638,72 @@ with tab_screen:
     st.divider()
     sc1, sc2, sc3, sc4, sc5 = st.columns(5)
     with sc1: st.info("🎈 **Float < 20M** ⭐25점\n\n가벼운 체급 = 폭등 가능")
-    with sc2: st.success("🧨 **SI > 20%** ⭐20점\n\n숏 커버 매수 = 갭업 증폭")
+    with sc2: st.success("🧨 **SI > 15%** ⭐20점\n\n숏 커버 매수 = 갭업 증폭")
     with sc3: st.success("🦴 **SMA200 위** ⭐20점\n\n악성 매물대 없음")
     with sc4: st.warning("🎯 **VWAP 위** ⭐15점\n\n세력 수익권 = 홀딩")
     with sc5: st.error("📊 **RVOL > 2x** ⭐15점\n\n세력 개입 증거")
+
+    st.divider()
+    st.subheader("📡 실시간 모니터링 도구 (APEX 전략 필수)")
+    st.caption(
+        "스크리너는 '후보 발굴'이 아닌 **'촉매 발생 후 빠른 검증'** 도구입니다. "
+        "아래 도구로 먼저 촉매(공시/뉴스)를 발견한 뒤 → APEX 개별 분석으로 검증하세요."
+    )
+
+    mt1, mt2, mt3 = st.columns(3)
+
+    with mt1:
+        st.markdown("### 🦅 Unusual Whales (무료)")
+        st.success(
+            "**역할:** After-hours 급등 종목 실시간 알림\n\n"
+            "**사용법:**\n"
+            "- 앱/웹 알림 설정 → After-hours 급등 필터\n"
+            "- 옵션 플로우 이상 감지로 세력 움직임 포착\n"
+            "- Dark Pool 거래 급증 알림\n\n"
+            "**주의:** 무료 플랜은 일부 기능 제한"
+        )
+        st.markdown("[👉 unusualwhales.com](https://unusualwhales.com)")
+
+    with mt2:
+        st.markdown("### 📄 SEC EDGAR 알림 (무료, 가장 정확)")
+        st.info(
+            "**역할:** 관심 종목 8-K 공시 이메일 즉시 알림\n\n"
+            "**설정 방법:**\n"
+            "1. EDGAR 접속 → 로그인\n"
+            "2. 관심 종목 검색\n"
+            "3. 'Get Alerts' 클릭\n"
+            "4. 8-K 공시 발생 시 이메일 즉시 수신\n\n"
+            "**장점:** 완전 무료 · 가장 빠른 공식 공시"
+        )
+        st.markdown("[👉 efts.sec.gov/LATEST/search-index](https://efts.sec.gov/LATEST/search-index?q=%228-K%22&dateRange=custom&startdt=2024-01-01&forms=8-K)")
+        st.markdown("[👉 EDGAR 알림 설정](https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany)")
+
+    with mt3:
+        st.markdown("### 🐦 Grok X 검색 (무료)")
+        st.warning(
+            "**역할:** 특정 티커 실시간 X(트위터) 반응 확인\n\n"
+            "**사용법:**\n"
+            "- Grok에 아래 프롬프트 복사\n"
+            "- 티커 발견 즉시 검색\n\n"
+            "**빠른 검색 프롬프트:**"
+        )
+        st.code(
+            "X(트위터)에서 $[티커] 최근 반응 분석:\n"
+            "① 긍정 vs 부정 비율\n"
+            "② 오늘 밤 공시/호재 언급 있나?\n"
+            "③ 세력 또는 기관 움직임 신호?\n"
+            "④ Offering/희석 위험 언급?",
+            language="text"
+        )
+
+    st.divider()
+    st.error(
+        "🎯 **올바른 APEX 실전 흐름**\n\n"
+        "**① EDGAR 알림** → 오늘 밤 8-K 공시 수신  |  "
+        "**② Unusual Whales** → After-hours 급등 종목 포착  |  "
+        "**③ Grok** → X 반응 + Offering 위험 확인  |  "
+        "**④ APEX 개별 분석** → 120점 검증 후 진입 결정"
+    )
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -658,33 +720,54 @@ with tab_squeeze:
         st.success("**🗜️ Squeeze Breakout**\n\nRVOL 낮음(<0.75) + 패턴 수렴 + 보유 수일~수주")
 
     st.divider()
+    # 섹터 제외 경고
+    st.warning(
+        "⚠️ **Squeeze 전략 적합 섹터:** Technology · Healthcare · Energy · Consumer Cyclical\n\n"
+        "Utility · Financial · Real Estate · Consumer Staples는 변동성이 낮아 "
+        "응축해도 폭등 가능성이 낮습니다. **섹터 필터를 반드시 확인하세요.**"
+    )
     with st.expander("⚙️ Squeeze 조건 설정", expanded=True):
         sc1, sc2, sc3 = st.columns(3)
         with sc1:
+            sq_sector = st.selectbox(
+                "🏭 섹터 필터 (핵심)",
+                ["Technology", "Healthcare", "Energy", "Consumer Cyclical", "Any"],
+                index=0,
+                help="Utility·Financial·Real Estate는 응축해도 잘 안 오름. Technology 권장"
+            )
             sq_20hl  = st.selectbox("📐 20일 고저범위", ["0-10% below High","0-5% below High","Any"], 0)
             sq_rvol  = st.selectbox("📉 상대 거래량 (소멸)", ["Under 0.75","Under 0.5","Any"], 0)
             sq_beta  = st.selectbox("📊 베타", ["0.5 to 1.5","Under 1.5","Any"], 0)
         with sc2:
+            sq_price = st.selectbox(
+                "💲 주가 (페니스탁 제외)",
+                ["Over $5", "Over $10", "Over $2", "Any"],
+                index=0,
+                help="$5 미만 Squeeze는 신뢰도 낮음. Over $5 권장"
+            )
             sq_sma20 = st.selectbox("📈 20일 SMA", ["Price above SMA20","Price crossed SMA20","Any"], 0)
             sq_sma50 = st.selectbox("📈 50일 SMA", ["Price above SMA50","Any"], 0)
             sq_sma200= st.selectbox("🦴 200일 SMA", ["Price above SMA200","Any"], 0)
         with sc3:
-            sq_avg   = st.selectbox("💧 평균 거래량", ["Over 300K","Over 500K","Any"], 0)
+            sq_avg   = st.selectbox("💧 평균 거래량", ["Over 500K","Over 300K","Any"], 0,
+                                    help="유동성 최소 기준 강화. Over 500K 권장")
             sq_inst  = st.selectbox("🏛️ 기관 보유", ["Over 10%","Over 20%","Any"], 0)
             sq_pat   = st.selectbox("📐 차트 패턴", ["Triangle Ascending","Wedge","Any"], 0,
                                     help="Wedge는 방향 불명. Triangle Ascending 권장")
 
     if st.button("🗜️ Squeeze 스크리너 실행", type="primary", use_container_width=True):
         sq = {}
-        if sq_20hl  != "Any": sq["20-Day High/Low"]               = sq_20hl
-        if sq_rvol  != "Any": sq["Relative Volume"]               = sq_rvol
-        if sq_beta  != "Any": sq["Beta"]                          = sq_beta
-        if sq_sma20 != "Any": sq["20-Day Simple Moving Average"]  = sq_sma20
-        if sq_sma50 != "Any": sq["50-Day Simple Moving Average"]  = sq_sma50
-        if sq_sma200!= "Any": sq["200-Day Simple Moving Average"] = sq_sma200
-        if sq_avg   != "Any": sq["Average Volume"]                = sq_avg
-        if sq_inst  != "Any": sq["InstitutionalOwnership"]        = sq_inst
-        if sq_pat   != "Any": sq["Pattern"]                       = sq_pat
+        if sq_sector != "Any": sq["Sector"]                          = sq_sector
+        if sq_price  != "Any": sq["Price"]                            = sq_price
+        if sq_20hl   != "Any": sq["20-Day High/Low"]                  = sq_20hl
+        if sq_rvol   != "Any": sq["Relative Volume"]                  = sq_rvol
+        if sq_beta   != "Any": sq["Beta"]                             = sq_beta
+        if sq_sma20  != "Any": sq["20-Day Simple Moving Average"]     = sq_sma20
+        if sq_sma50  != "Any": sq["50-Day Simple Moving Average"]     = sq_sma50
+        if sq_sma200 != "Any": sq["200-Day Simple Moving Average"]    = sq_sma200
+        if sq_avg    != "Any": sq["Average Volume"]                   = sq_avg
+        if sq_inst   != "Any": sq["InstitutionalOwnership"]          = sq_inst
+        if sq_pat    != "Any": sq["Pattern"]                          = sq_pat
 
         st.info(f"📡 Squeeze 스크리닝 중... `{sq}`")
         try:
