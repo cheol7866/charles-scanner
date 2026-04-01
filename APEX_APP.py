@@ -34,17 +34,7 @@ try:
     from plotly.subplots import make_subplots
     PLOTLY_OK = True
 except ImportError:
-    import subprocess, sys
-    try:
-        subprocess.check_call(
-            [sys.executable, "-m", "pip", "install", "plotly", "-q"],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-        )
-        import plotly.graph_objects as go
-        from plotly.subplots import make_subplots
-        PLOTLY_OK = True
-    except Exception:
-        PLOTLY_OK = False
+    PLOTLY_OK = False
 
 try:
     import matplotlib
@@ -906,43 +896,106 @@ with tab_analyze:
 
         st.divider()
 
-        # ── 차트 (Plotly 우선, matplotlib 폴백) ──────────────
+        # ── 차트 (4단계 폴백) ─────────────────────────────────
         st.markdown("### 📈 차트 (60일 가격 + SMA/BB/RSI)")
 
-        # 캐시 초기화 버튼
-        ch_btn_col1, ch_btn_col2 = st.columns([1, 5])
-        with ch_btn_col1:
-            if st.button("🔄 캐시 초기화 & 재로드", help="차트가 안 나올 때 클릭"):
+        col_refresh = st.columns([1, 5])
+        with col_refresh[0]:
+            if st.button("🔄 데이터 새로고침", help="데이터가 안 보일 때 클릭"):
                 st.cache_data.clear()
                 st.rerun()
 
-        # hist_daily가 비어있으면 직접 재시도
-        chart_data = hist_daily
-        if chart_data.empty:
+        # 차트용 데이터 확보 (hist_daily 우선, 실패 시 직접 fetch)
+        chart_df = hist_daily.copy() if not hist_daily.empty else pd.DataFrame()
+        if chart_df.empty:
             try:
-                chart_data = yf.Ticker(ticker).history(period="300d", interval="1d")
+                _tmp = yf.download(
+                    ticker, period="300d", interval="1d",
+                    progress=False, auto_adjust=True
+                )
+                if _tmp is not None and not _tmp.empty:
+                    # MultiIndex 컬럼 평탄화
+                    if isinstance(_tmp.columns, pd.MultiIndex):
+                        _tmp.columns = _tmp.columns.get_level_values(0)
+                    chart_df = _tmp
             except Exception:
-                chart_data = pd.DataFrame()
+                pass
 
-        if not chart_data.empty:
+        if chart_df.empty:
+            # 최후 수단: 단기 데이터라도 시도
+            try:
+                chart_df = yf.Ticker(ticker).history(period="60d", interval="1d")
+            except Exception:
+                pass
+
+        if not chart_df.empty:
+            # 지표 계산
+            ch = chart_df.copy()
+            ch["SMA20"]  = ch["Close"].rolling(20).mean()
+            ch["SMA50"]  = ch["Close"].rolling(50).mean()
+            ch["SMA200"] = ch["Close"].rolling(200).mean()
+            ch["BB_mid"] = ch["Close"].rolling(20).mean()
+            ch["BB_std"] = ch["Close"].rolling(20).std()
+            ch["BB_up"]  = ch["BB_mid"] + 2 * ch["BB_std"]
+            ch["BB_lo"]  = ch["BB_mid"] - 2 * ch["BB_std"]
+            d = ch["Close"].diff()
+            g, l = d.clip(lower=0), (-d.clip(upper=0))
+            ch["RSI2"]  = 100 - 100/(1 + g.ewm(alpha=0.5,  min_periods=2,  adjust=False).mean() /
+                                         l.ewm(alpha=0.5,  min_periods=2,  adjust=False).mean().replace(0, 1e-10))
+            ch["RSI14"] = 100 - 100/(1 + g.ewm(alpha=1/14, min_periods=14, adjust=False).mean() /
+                                         l.ewm(alpha=1/14, min_periods=14, adjust=False).mean().replace(0, 1e-10))
+            df60 = ch.tail(60)
+
+            # 1순위: Plotly 인터랙티브 차트
             if PLOTLY_OK:
-                fig = make_apex_chart(ticker, chart_data)
-                if fig:
-                    st.plotly_chart(fig, use_container_width=True)
-            elif MPL_OK:
-                st.caption("ℹ️ plotly 미설치 — matplotlib 차트 표시 중. 터미널에서 `pip install plotly` 후 재실행하면 인터랙티브 차트로 업그레이드됩니다.")
-                mpl_fig = make_mpl_chart(ticker, chart_data)
-                if mpl_fig:
-                    st.pyplot(mpl_fig, use_container_width=True)
-                    plt.close(mpl_fig)
+                try:
+                    fig = make_apex_chart(ticker, chart_df)
+                    if fig:
+                        st.plotly_chart(fig, use_container_width=True)
+                except Exception as _e:
+                    st.warning(f"Plotly 렌더링 오류: {_e}")
+                    PLOTLY_OK_LOCAL = False
+                else:
+                    PLOTLY_OK_LOCAL = True
             else:
-                st.warning("⚠️ 차트 라이브러리 없음 — 터미널에서 `pip install plotly` 실행")
+                PLOTLY_OK_LOCAL = False
+
+            # 2순위: matplotlib 차트
+            if not PLOTLY_OK_LOCAL:
+                if MPL_OK:
+                    try:
+                        mpl_fig = make_mpl_chart(ticker, chart_df)
+                        if mpl_fig:
+                            st.caption("ℹ️ 터미널에서 `pip install plotly` 실행 후 재시작하면 인터랙티브 차트로 업그레이드됩니다.")
+                            st.pyplot(mpl_fig, use_container_width=True)
+                            plt.close(mpl_fig)
+                    except Exception as _e:
+                        st.warning(f"matplotlib 오류: {_e}")
+                        MPL_OK_LOCAL = False
+                    else:
+                        MPL_OK_LOCAL = True
+                else:
+                    MPL_OK_LOCAL = False
+
+                # 3순위: Streamlit 기본 라인차트 (설치 불필요, 항상 작동)
+                if not MPL_OK:
+                    st.caption("ℹ️ 기본 차트로 표시 중 (`pip install plotly`로 업그레이드 가능)")
+                    price_chart_data = df60[["Close", "SMA20", "SMA50", "SMA200"]].dropna(how="all")
+                    st.line_chart(price_chart_data, use_container_width=True)
+
+                    st.caption("RSI(2) / RSI(14)")
+                    rsi_data = df60[["RSI2", "RSI14"]].dropna(how="all")
+                    st.line_chart(rsi_data, use_container_width=True)
         else:
-            st.warning(
-                "⚠️ 차트 데이터 없음 — yfinance 일시 오류이거나 네트워크 문제일 수 있습니다.\n\n"
-                "**[🔄 캐시 초기화 & 재로드]** 버튼을 클릭하거나, "
-                "티커가 올바른지 확인 후 잠시 후 재시도하세요."
+            st.error(
+                "❌ 차트 데이터를 가져오지 못했습니다.\n\n"
+                "**가능한 원인:**\n"
+                "- yfinance Yahoo Finance 서버 일시 오류 (1~2분 후 재시도)\n"
+                "- 티커 오류 (미국 주식 티커인지 확인)\n"
+                "- 인터넷 연결 상태 확인\n\n"
+                "**[🔄 데이터 새로고침]** 버튼을 눌러 재시도하세요."
             )
+
 
 
         st.divider()
