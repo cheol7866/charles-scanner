@@ -34,7 +34,26 @@ try:
     from plotly.subplots import make_subplots
     PLOTLY_OK = True
 except ImportError:
-    PLOTLY_OK = False
+    import subprocess, sys
+    try:
+        subprocess.check_call(
+            [sys.executable, "-m", "pip", "install", "plotly", "-q"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+        )
+        import plotly.graph_objects as go
+        from plotly.subplots import make_subplots
+        PLOTLY_OK = True
+    except Exception:
+        PLOTLY_OK = False
+
+try:
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    import matplotlib.dates as mdates
+    MPL_OK = True
+except ImportError:
+    MPL_OK = False
 
 # ══════════════════════════════════════════════════════════════════
 # 페이지 설정
@@ -470,6 +489,82 @@ def make_apex_chart(ticker: str, hist_full: pd.DataFrame):
     return fig
 
 
+def make_mpl_chart(ticker: str, hist_full: pd.DataFrame):
+    """matplotlib 폴백 차트 — plotly 없을 때 사용"""
+    if not MPL_OK or hist_full.empty:
+        return None
+
+    h = hist_full.copy()
+    h["SMA20"]  = h["Close"].rolling(20).mean()
+    h["SMA50"]  = h["Close"].rolling(50).mean()
+    h["SMA200"] = h["Close"].rolling(200).mean()
+    h["BB_mid"] = h["Close"].rolling(20).mean()
+    h["BB_std"] = h["Close"].rolling(20).std()
+    h["BB_up"]  = h["BB_mid"] + 2 * h["BB_std"]
+    h["BB_lo"]  = h["BB_mid"] - 2 * h["BB_std"]
+    delta = h["Close"].diff()
+    g = delta.clip(lower=0)
+    l = (-delta.clip(upper=0))
+    h["RSI2"]  = 100 - 100 / (1 + g.ewm(alpha=0.5,  min_periods=2,  adjust=False).mean() /
+                                    l.ewm(alpha=0.5,  min_periods=2,  adjust=False).mean().replace(0, 1e-10))
+    h["RSI14"] = 100 - 100 / (1 + g.ewm(alpha=1/14, min_periods=14, adjust=False).mean() /
+                                    l.ewm(alpha=1/14, min_periods=14, adjust=False).mean().replace(0, 1e-10))
+    df = h.tail(60)
+
+    fig, (ax1, ax2, ax3) = plt.subplots(
+        3, 1, figsize=(14, 9), sharex=True,
+        gridspec_kw={"height_ratios": [3, 1, 1.5]},
+        facecolor="#0E1117"
+    )
+    for ax in [ax1, ax2, ax3]:
+        ax.set_facecolor("#0E1117")
+        ax.tick_params(colors="#AAAAAA", labelsize=8)
+        ax.spines["bottom"].set_color("#333333")
+        ax.spines["top"].set_color("#333333")
+        ax.spines["left"].set_color("#333333")
+        ax.spines["right"].set_color("#333333")
+        ax.yaxis.label.set_color("#AAAAAA")
+        ax.grid(color="#1E1E1E", linewidth=0.5)
+
+    # 가격 라인 (캔들 대신 Close 라인)
+    ax1.plot(df.index, df["Close"],  color="#FFFFFF",  linewidth=1.5, label="Close", zorder=5)
+    ax1.plot(df.index, df["SMA20"],  color="#FFD700",  linewidth=1.2, label="SMA20",  alpha=0.9)
+    ax1.plot(df.index, df["SMA50"],  color="#42A5F5",  linewidth=1.2, label="SMA50",  alpha=0.9)
+    ax1.plot(df.index, df["SMA200"], color="#FF7043",  linewidth=1.8, label="SMA200", alpha=0.9)
+    ax1.fill_between(df.index, df["BB_up"], df["BB_lo"],
+                     alpha=0.08, color="#CE93D8", label="BB Band")
+    ax1.plot(df.index, df["BB_up"], color="#CE93D8", linewidth=0.8, linestyle="--", alpha=0.6)
+    ax1.plot(df.index, df["BB_lo"], color="#CE93D8", linewidth=0.8, linestyle="--", alpha=0.6)
+    ax1.set_title(f"{ticker} — 60일 차트 (SMA20/50/200 + BB)",
+                  color="#E0E0E0", fontsize=11, pad=8)
+    ax1.legend(loc="upper left", fontsize=7, facecolor="#1A1A1A",
+               labelcolor="#CCCCCC", framealpha=0.8)
+    ax1.set_ylabel("가격 ($)", color="#AAAAAA", fontsize=9)
+
+    # 거래량
+    vol_colors = ["#00C853" if c >= o else "#FF5252"
+                  for c, o in zip(df["Close"], df["Open"])]
+    ax2.bar(df.index, df["Volume"], color=vol_colors, alpha=0.75, width=0.8)
+    ax2.set_ylabel("거래량", color="#AAAAAA", fontsize=9)
+
+    # RSI
+    ax3.plot(df.index, df["RSI2"],  color="#FFD700", linewidth=2.0, label="RSI(2)")
+    ax3.plot(df.index, df["RSI14"], color="#42A5F5", linewidth=1.5, linestyle="--", label="RSI(14)")
+    for level, color, alpha in [(70, "#FF5252", 0.5), (30, "#00C853", 0.5), (10, "#00C853", 0.8)]:
+        ax3.axhline(y=level, color=color, linewidth=0.9, linestyle="--", alpha=alpha)
+    ax3.set_ylim(0, 100)
+    ax3.set_ylabel("RSI", color="#AAAAAA", fontsize=9)
+    ax3.legend(loc="upper left", fontsize=7, facecolor="#1A1A1A",
+               labelcolor="#CCCCCC", framealpha=0.8)
+
+    ax3.xaxis.set_major_formatter(mdates.DateFormatter("%m/%d"))
+    ax3.xaxis.set_major_locator(mdates.WeekdayLocator(interval=2))
+    plt.setp(ax3.xaxis.get_majorticklabels(), rotation=30, ha="right")
+
+    plt.tight_layout(h_pad=0.5)
+    return fig
+
+
 # ══════════════════════════════════════════════════════════════════
 # TAB 1 — APEX 스크리너 (엄격화된 필터)
 # ══════════════════════════════════════════════════════════════════
@@ -808,17 +903,24 @@ with tab_analyze:
 
         st.divider()
 
-        # ── Plotly 차트 ───────────────────────────────────
-        st.markdown("### 📈 인터랙티브 차트 (60일 캔들 + SMA/BB/RSI)")
-        if PLOTLY_OK:
-            if not hist_daily.empty:
+        # ── 차트 (Plotly 우선, matplotlib 폴백) ──────────────
+        st.markdown("### 📈 차트 (60일 가격 + SMA/BB/RSI)")
+        if not hist_daily.empty:
+            if PLOTLY_OK:
                 fig = make_apex_chart(ticker, hist_daily)
                 if fig:
                     st.plotly_chart(fig, use_container_width=True)
+            elif MPL_OK:
+                st.caption("ℹ️ plotly 미설치 — matplotlib 차트로 표시 중 (터미널에서 `pip install plotly` 후 재실행하면 인터랙티브 차트로 업그레이드됩니다)")
+                mpl_fig = make_mpl_chart(ticker, hist_daily)
+                if mpl_fig:
+                    st.pyplot(mpl_fig, use_container_width=True)
+                    plt.close(mpl_fig)
             else:
-                st.warning("⚠️ 차트 데이터 없음")
+                st.warning("⚠️ 차트 라이브러리 없음 — `pip install plotly` 또는 `pip install matplotlib`")
         else:
-            st.warning("⚠️ plotly 없음 — `pip install plotly` 후 재실행")
+            st.warning("⚠️ 차트 데이터 없음")
+
 
         st.divider()
 
