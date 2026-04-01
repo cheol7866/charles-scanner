@@ -94,9 +94,12 @@ def get_intraday(ticker: str) -> pd.DataFrame:
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def get_daily(ticker: str, period: str = "300d") -> pd.DataFrame:
-    """일봉 데이터 (1시간 캐시)"""
+    """일봉 데이터 (1시간 캐시) — 빈 결과는 캐시 안 함"""
     try:
-        return yf.Ticker(ticker).history(period=period, interval="1d")
+        df = yf.Ticker(ticker).history(period=period, interval="1d")
+        if df is None or df.empty:
+            return pd.DataFrame()   # 빈 DataFrame 반환 (캐시됨)
+        return df
     except Exception:
         return pd.DataFrame()
 
@@ -905,21 +908,41 @@ with tab_analyze:
 
         # ── 차트 (Plotly 우선, matplotlib 폴백) ──────────────
         st.markdown("### 📈 차트 (60일 가격 + SMA/BB/RSI)")
-        if not hist_daily.empty:
+
+        # 캐시 초기화 버튼
+        ch_btn_col1, ch_btn_col2 = st.columns([1, 5])
+        with ch_btn_col1:
+            if st.button("🔄 캐시 초기화 & 재로드", help="차트가 안 나올 때 클릭"):
+                st.cache_data.clear()
+                st.rerun()
+
+        # hist_daily가 비어있으면 직접 재시도
+        chart_data = hist_daily
+        if chart_data.empty:
+            try:
+                chart_data = yf.Ticker(ticker).history(period="300d", interval="1d")
+            except Exception:
+                chart_data = pd.DataFrame()
+
+        if not chart_data.empty:
             if PLOTLY_OK:
-                fig = make_apex_chart(ticker, hist_daily)
+                fig = make_apex_chart(ticker, chart_data)
                 if fig:
                     st.plotly_chart(fig, use_container_width=True)
             elif MPL_OK:
-                st.caption("ℹ️ plotly 미설치 — matplotlib 차트로 표시 중 (터미널에서 `pip install plotly` 후 재실행하면 인터랙티브 차트로 업그레이드됩니다)")
-                mpl_fig = make_mpl_chart(ticker, hist_daily)
+                st.caption("ℹ️ plotly 미설치 — matplotlib 차트 표시 중. 터미널에서 `pip install plotly` 후 재실행하면 인터랙티브 차트로 업그레이드됩니다.")
+                mpl_fig = make_mpl_chart(ticker, chart_data)
                 if mpl_fig:
                     st.pyplot(mpl_fig, use_container_width=True)
                     plt.close(mpl_fig)
             else:
-                st.warning("⚠️ 차트 라이브러리 없음 — `pip install plotly` 또는 `pip install matplotlib`")
+                st.warning("⚠️ 차트 라이브러리 없음 — 터미널에서 `pip install plotly` 실행")
         else:
-            st.warning("⚠️ 차트 데이터 없음")
+            st.warning(
+                "⚠️ 차트 데이터 없음 — yfinance 일시 오류이거나 네트워크 문제일 수 있습니다.\n\n"
+                "**[🔄 캐시 초기화 & 재로드]** 버튼을 클릭하거나, "
+                "티커가 올바른지 확인 후 잠시 후 재시도하세요."
+            )
 
 
         st.divider()
