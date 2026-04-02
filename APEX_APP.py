@@ -94,14 +94,14 @@ def get_vix_signal():
 @st.cache_data(ttl=600, show_spinner=False)
 def get_spy_chart():
     try:
-        return yf.Ticker("SPY").history(period="90d", interval="1d")
+        return yf.Ticker("SPY").history(period="300d", interval="1d")
     except Exception:
         return pd.DataFrame()
 
 @st.cache_data(ttl=600, show_spinner=False)
 def get_stock_data(ticker: str):
     try:
-        return yf.Ticker(ticker).history(period="90d", interval="1d")
+        return yf.Ticker(ticker).history(period="300d", interval="1d")
     except Exception:
         return pd.DataFrame()
 
@@ -303,7 +303,7 @@ if run_scan:
 
         # 티커 목록
         if "Ticker" in result.columns:
-            tickers = result["Ticker"].tolist()[:15]
+            tickers = result["Ticker"].tolist()
             st.markdown("#### 발견 종목")
             st.code(", ".join(tickers))
 
@@ -312,7 +312,11 @@ if run_scan:
         # 종목 선택 → 차트
         st.markdown("#### 📈 종목 차트 확인")
         if "Ticker" in result.columns:
-            selected = st.selectbox("종목 선택", tickers)
+            selected = st.selectbox(
+                "종목 선택 (목록에서 고르세요)",
+                options=tickers,
+                index=0
+            )
 
             if selected:
                 with st.spinner(f"{selected} 로딩..."):
@@ -329,32 +333,61 @@ if run_scan:
                     hist["RSI14"] = 100 - 100/(1 + g/l.replace(0, 1e-10))
 
                     df60 = hist.tail(60)
-                    curr   = df60["Close"].iloc[-1]
-                    s200   = df60["SMA200"].iloc[-1]
-                    s50    = df60["SMA50"].iloc[-1]
-                    rsi_v  = df60["RSI14"].iloc[-1]
+                    curr  = float(df60["Close"].iloc[-1])
+                    s200  = float(df60["SMA200"].iloc[-1]) if not pd.isna(df60["SMA200"].iloc[-1]) else None
+                    s50   = float(df60["SMA50"].iloc[-1])  if not pd.isna(df60["SMA50"].iloc[-1])  else None
+                    rsi_v = float(df60["RSI14"].iloc[-1])  if not pd.isna(df60["RSI14"].iloc[-1])  else None
 
-                    # 체크 — 모바일 2열
+                    # 3개월 수익률
+                    chg_3m = None
+                    if len(hist) >= 63:
+                        chg_3m = (hist["Close"].iloc[-1] / hist["Close"].iloc[-63] - 1) * 100
+
+                    # 거래량 배율
+                    avg_vol  = hist["Volume"].tail(20).mean()
+                    rvol_now = hist["Volume"].iloc[-1] / avg_vol if avg_vol > 0 else 0
+
+                    # 체크 카드 2열
                     cc1, cc2 = st.columns(2)
                     with cc1:
-                        if not pd.isna(s200) and curr > s200:
+                        if s200 and curr > s200:
                             st.success(f"✅ SMA200\n${s200:.1f} 위")
                         else:
-                            st.error(f"❌ SMA200\n${s200:.1f} 아래")
-                        if not pd.isna(rsi_v) and rsi_v < 60:
+                            st.error(f"❌ SMA200\n{'$'+f'{s200:.1f}' if s200 else 'N/A'} 아래")
+                        if rsi_v and rsi_v < 60:
                             st.success(f"✅ RSI {rsi_v:.0f}\n과매수 아님")
-                        else:
+                        elif rsi_v:
                             st.error(f"❌ RSI {rsi_v:.0f}\n과매수")
                     with cc2:
-                        if not pd.isna(s50) and curr > s50:
+                        if s50 and curr > s50:
                             st.success(f"✅ SMA50\n${s50:.1f} 위")
                         else:
-                            st.error(f"❌ SMA50\n${s50:.1f} 아래")
+                            st.error(f"❌ SMA50\n{'$'+f'{s50:.1f}' if s50 else 'N/A'} 아래")
                         st.info(f"💲 현재가\n${curr:.2f}")
 
-                    # 차트 (Plotly)
+                    # 3개월 수익률 + 거래량
+                    mc1, mc2 = st.columns(2)
+                    with mc1:
+                        if chg_3m is not None:
+                            if chg_3m >= 10:
+                                st.success(f"📈 3개월 수익률\n+{chg_3m:.1f}% ✅")
+                            else:
+                                st.warning(f"📈 3개월 수익률\n{chg_3m:+.1f}%")
+                    with mc2:
+                        if rvol_now >= 1.5:
+                            st.success(f"📊 RVOL {rvol_now:.1f}x\n거래 활발")
+                        else:
+                            st.info(f"📊 RVOL {rvol_now:.1f}x")
+
+                    # 차트 (캔들 + SMA + 볼륨)
                     if PLOTLY_OK:
-                        fig = go.Figure()
+                        from plotly.subplots import make_subplots
+                        fig = make_subplots(
+                            rows=2, cols=1,
+                            shared_xaxes=True,
+                            vertical_spacing=0.03,
+                            row_heights=[0.70, 0.30],
+                        )
                         fig.add_trace(go.Candlestick(
                             x=df60.index,
                             open=df60["Open"], high=df60["High"],
@@ -364,32 +397,49 @@ if run_scan:
                             decreasing_line_color="#FF5252",
                             increasing_fillcolor="#00C853",
                             decreasing_fillcolor="#FF5252",
-                        ))
-                        for col, color, nm in [
-                            ("SMA20",  "#FFD700", "SMA20"),
+                        ), row=1, col=1)
+                        for col_n, color, nm in [
                             ("SMA50",  "#42A5F5", "SMA50"),
-                            ("SMA200", "#FF7043", "SMA200"),
+                            ("SMA200", "#FF7043", "SMA200 ★"),
                         ]:
                             fig.add_trace(go.Scatter(
-                                x=df60.index, y=df60[col],
-                                name=nm, line=dict(color=color, width=1.5)
-                            ))
+                                x=df60.index, y=df60[col_n],
+                                name=nm, line=dict(color=color, width=2)
+                            ), row=1, col=1)
+                        vol_colors = [
+                            "#00C853" if c >= o else "#FF5252"
+                            for c, o in zip(df60["Close"], df60["Open"])
+                        ]
+                        fig.add_trace(go.Bar(
+                            x=df60.index, y=df60["Volume"],
+                            name="거래량", marker_color=vol_colors,
+                            opacity=0.7, showlegend=False,
+                        ), row=2, col=1)
+                        avg_vol_line = df60["Volume"].rolling(20).mean()
+                        fig.add_trace(go.Scatter(
+                            x=df60.index, y=avg_vol_line,
+                            name="평균거래량",
+                            line=dict(color="#AAAAAA", width=1, dash="dot"),
+                            showlegend=False,
+                        ), row=2, col=1)
                         fig.update_layout(
-                            title=f"{selected} 60일",
-                            height=350,
-                            paper_bgcolor="#0E1117",
-                            plot_bgcolor="#0E1117",
+                            title=f"{selected} — SMA50·SMA200·거래량",
+                            height=420,
+                            paper_bgcolor="#0E1117", plot_bgcolor="#0E1117",
                             font=dict(color="#E0E0E0", size=11),
                             xaxis_rangeslider_visible=False,
-                            margin=dict(l=30, r=10, t=40, b=20),
-                            legend=dict(orientation="h", y=1.08, font=dict(size=10)),
+                            margin=dict(l=30, r=10, t=45, b=20),
+                            legend=dict(orientation="h", y=1.06, font=dict(size=10)),
                             hovermode="x unified",
                         )
-                        fig.update_xaxes(gridcolor="#1E1E2E")
-                        fig.update_yaxes(gridcolor="#1E1E2E")
+                        for r in [1, 2]:
+                            fig.update_xaxes(gridcolor="#1E1E2E", row=r, col=1)
+                            fig.update_yaxes(gridcolor="#1E1E2E", row=r, col=1)
                         st.plotly_chart(fig, use_container_width=True)
                     else:
                         st.line_chart(df60[["Close","SMA50","SMA200"]])
+                        st.bar_chart(df60["Volume"])
+
 
                     # Finviz 차트 링크
                     st.markdown(
