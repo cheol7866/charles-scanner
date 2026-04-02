@@ -260,11 +260,18 @@ st.divider()
 st.markdown("## 🔍 종목 스캔")
 st.caption("필터: SMA200위 + SMA50위 + RSI<60 + 3개월+10% + 거래량500K+")
 
+# session_state 초기화 — 스캔 결과를 기억해서 종목 선택해도 사라지지 않음
+if "scan_result" not in st.session_state:
+    st.session_state.scan_result = None
+if "scan_sector" not in st.session_state:
+    st.session_state.scan_sector = "Technology"
+
 sector = st.selectbox(
     "섹터",
     ["Technology", "Healthcare", "Energy",
      "Consumer Cyclical", "Industrials", "전체"],
-    index=0
+    index=0,
+    key="sector_select"
 )
 
 # 조건 경고
@@ -276,12 +283,27 @@ if not all_green:
     elif not vix_ok:
         st.warning("⚠️ VIX 높음 — 포지션 50% 줄이기")
 
-run_scan = st.button("🔍 스캔 실행", type="primary", use_container_width=True)
+col_scan1, col_scan2 = st.columns([3, 1])
+with col_scan1:
+    run_scan = st.button("🔍 스캔 실행", type="primary", use_container_width=True)
+with col_scan2:
+    clear_scan = st.button("🗑️ 초기화", use_container_width=True)
+
+if clear_scan:
+    st.session_state.scan_result = None
+    st.rerun()
 
 if run_scan:
     with st.spinner("Finviz 스크리닝 중..."):
         result = run_screener(sector)
+    # 결과를 session_state에 저장 → 종목 선택해도 유지됨
+    st.session_state.scan_result = result
+    st.session_state.scan_sector = sector
 
+# session_state에서 결과 불러오기 (항상)
+result = st.session_state.scan_result
+
+if result is not None:
     if isinstance(result, str):
         err = result
         if any(k in err for k in ["ProxyError", "ConnectionError", "403"]):
