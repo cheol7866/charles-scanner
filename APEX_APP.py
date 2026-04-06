@@ -366,8 +366,23 @@ if result is not None:
     else:
         st.success(f"✅ {len(result)}개 종목 발견!")
 
-        # RVOL 컬럼 추가 표시
-        show_cols = [c for c in ["Ticker","Company","Price","Change","Relative Volume"] if c in result.columns]
+        # RVOL 컬럼 없으면 yfinance로 직접 계산해서 추가
+        if "Relative Volume" not in result.columns and "Ticker" in result.columns:
+            rvol_map = {}
+            for tk in result["Ticker"].tolist():
+                try:
+                    h = yf.Ticker(tk).history(period="25d", interval="1d")
+                    if not h.empty and len(h) >= 2:
+                        avg = float(h["Volume"].iloc[:-1].mean())
+                        last = float(h["Volume"].iloc[-1])
+                        rvol_map[tk] = round(last / avg, 2) if avg > 0 else None
+                except Exception:
+                    rvol_map[tk] = None
+            result = result.copy()
+            result["RVOL"] = result["Ticker"].map(rvol_map)
+
+        # 표시 컬럼 — RVOL 우선순위로
+        show_cols = [c for c in ["Ticker","Company","Price","Change","RVOL","Relative Volume"] if c in result.columns]
         st.dataframe(result[show_cols], use_container_width=True, hide_index=True)
 
         if "Ticker" in result.columns:
@@ -588,16 +603,22 @@ if result is not None:
 
                     # ── 손절/목표가 ──
                     st.divider()
-                    stop = curr * 0.95
+                    # 손절: SMA20 기준 (추세 기반 논리적 손절)
+                    s20 = float(df60["SMA20"].iloc[-1]) if not pd.isna(df60["SMA20"].iloc[-1]) else None
                     tgt1 = curr * 1.03
                     tgt2 = curr * 1.07
                     sc1, sc2, sc3 = st.columns(3)
                     with sc1:
-                        st.error(f"🛑 손절\n${stop:.2f}\n(-5%)")
+                        if s20:
+                            stop_pct = (s20 - curr) / curr * 100
+                            st.error(f"🛑 손절 (SMA20)\n${s20:.2f}\n({stop_pct:.1f}%)\n종가 이탈 시 청산")
+                        else:
+                            st.error(f"🛑 손절\nSMA20 계산 불가")
                     with sc2:
                         st.success(f"🎯 목표1\n${tgt1:.2f}\n(+3%)")
                     with sc3:
                         st.success(f"🎯 목표2\n${tgt2:.2f}\n(+7%)")
+                    st.caption("⚠️ 손절 기준: SMA20 아래 종가 마감 시 청산 — 장중 노이즈에 흔들리지 말 것")
 
 st.divider()
 
@@ -615,7 +636,7 @@ st.markdown("""
 □ RSI 60 미만?  
 □ RVOL 전략 기준 충족? (MOM > 1.2 / MR < 0.8)  
 □ 소셜 감성지수 45% 이상?  
-□ 손절가 설정 완료?  
+□ 손절가 설정 완료? (SMA20 아래 종가 마감 시 청산)  
 → 전부 ✅면 진입
 """)
-st.error("**손절가 미설정 = 진입 금지**")
+st.error("**손절 원칙: SMA20 아래 종가 마감 = 즉시 청산 / 장중 노이즈에 흔들리지 말 것**")
