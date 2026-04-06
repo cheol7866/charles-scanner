@@ -1,18 +1,23 @@
 """
-📊 시장 신호등 + 상승 종목 스캐너 (모바일 최적화)
-────────────────────────────────────────────
-핵심 원칙: 3가지 신호등 모두 초록일 때만 진입.
+📊 APEX 시장 신호등 + 종목 스캐너 v2.0 (모바일 최적화)
+────────────────────────────────────────────────────
+핵심 원칙: 신호등 모두 초록일 때만 진입.
+MOM: RVOL > 1.2 (거래량 동반 상승 확인)
+MR : RVOL < 0.8 (과열 아님, 조용한 눌림목)
 
-설치: pip install streamlit yfinance pandas plotly finvizfinance
-실행: streamlit run market_scanner.py
+설치: pip install streamlit yfinance pandas plotly finvizfinance requests
+실행: streamlit run APEX_modification_v2.py
 """
 
 import streamlit as st
 import yfinance as yf
 import pandas as pd
+import requests
+import datetime
 
 try:
     import plotly.graph_objects as go
+    from plotly.subplots import make_subplots
     PLOTLY_OK = True
 except ImportError:
     PLOTLY_OK = False
@@ -21,46 +26,40 @@ except ImportError:
 # 페이지 설정 — 모바일 최적화
 # ══════════════════════════════════════════════════════════
 st.set_page_config(
-    page_title="🚦 시장 신호등",
-    layout="centered",   # 모바일: wide 대신 centered
+    page_title="🚦 APEX 신호등",
+    layout="centered",
     page_icon="🚦",
     initial_sidebar_state="collapsed"
 )
 
-# 모바일 CSS 최적화
 st.markdown("""
 <style>
-    /* 전체 폰트 크기 */
     html, body, [class*="css"] { font-size: 16px; }
-
-    /* 버튼 크게 */
     .stButton > button {
         height: 3.5rem;
         font-size: 1.1rem;
         font-weight: bold;
         border-radius: 12px;
     }
-
-    /* 메트릭 카드 */
     [data-testid="stMetric"] {
         background: #1E1E2E;
         border-radius: 12px;
         padding: 12px;
     }
-
-    /* 신호등 박스 */
     .signal-box {
         border-radius: 16px;
         padding: 16px;
         margin: 8px 0;
         font-size: 1.1rem;
     }
-
-    /* 상단 여백 줄이기 */
     .block-container { padding-top: 1rem; }
-
-    /* selectbox 크게 */
     .stSelectbox > div > div { font-size: 1rem; }
+    .sentiment-bar {
+        height: 24px;
+        border-radius: 8px;
+        margin: 6px 0;
+        transition: width 0.3s ease;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -69,9 +68,10 @@ st.markdown("""
 # 캐시 함수
 # ══════════════════════════════════════════════════════════
 @st.cache_data(ttl=300, show_spinner=False)
-def get_spy_signal():
+def get_index_signal(ticker: str):
+    """SPY 또는 QQQ 신호 반환: (price, sma200, chg)"""
     try:
-        hist = yf.Ticker("SPY").history(period="300d", interval="1d")
+        hist = yf.Ticker(ticker).history(period="300d", interval="1d")
         if hist.empty or len(hist) < 200:
             return None, None, None
         price  = float(hist["Close"].iloc[-1])
@@ -90,13 +90,6 @@ def get_vix_signal():
         return float(hist["Close"].iloc[-1])
     except Exception:
         return None
-
-@st.cache_data(ttl=600, show_spinner=False)
-def get_spy_chart():
-    try:
-        return yf.Ticker("SPY").history(period="300d", interval="1d")
-    except Exception:
-        return pd.DataFrame()
 
 @st.cache_data(ttl=600, show_spinner=False)
 def get_stock_data(ticker: str):
@@ -124,14 +117,40 @@ def run_screener(sector: str):
     except Exception as e:
         return str(e)
 
+@st.cache_data(ttl=900, show_spinner=False)
+def get_social_sentiment(ticker: str):
+    """
+    소셜미디어 감성지수 추정 (StockTwits 공개 API 사용)
+    bullish_count / (bullish_count + bearish_count) × 100
+    API 실패 시 None 반환 → UI에서 안내 표시
+    """
+    try:
+        url = f"https://api.stocktwits.com/api/2/streams/symbol/{ticker}.json"
+        resp = requests.get(url, timeout=5)
+        if resp.status_code != 200:
+            return None
+        data = resp.json()
+        messages = data.get("messages", [])
+        if not messages:
+            return None
+        bull = sum(1 for m in messages if m.get("entities", {}).get("sentiment", {}) and
+                   m["entities"]["sentiment"].get("basic") == "Bullish")
+        bear = sum(1 for m in messages if m.get("entities", {}).get("sentiment", {}) and
+                   m["entities"]["sentiment"].get("basic") == "Bearish")
+        total = bull + bear
+        if total == 0:
+            return None
+        return round(bull / total * 100, 1)
+    except Exception:
+        return None
+
 
 # ══════════════════════════════════════════════════════════
 # ① 타이틀
 # ══════════════════════════════════════════════════════════
-st.markdown("# 🚦 시장 신호등")
-st.caption("3개 모두 초록 → 진입 / 하나라도 빨강 → 오늘 쉬기")
+st.markdown("# 🚦 APEX 시장 신호등 v2")
+st.caption("신호등 모두 초록 → 진입 / 하나라도 빨강 → 오늘 쉬기")
 
-# 새로고침 버튼 (상단 고정)
 if st.button("🔄 신호 새로고침", use_container_width=True):
     st.cache_data.clear()
     st.rerun()
@@ -143,33 +162,57 @@ st.divider()
 # ② 데이터 로드
 # ══════════════════════════════════════════════════════════
 with st.spinner("시장 데이터 확인 중..."):
-    spy_price, spy_sma200, spy_chg = get_spy_signal()
+    spy_price, spy_sma200, spy_chg = get_index_signal("SPY")
+    qqq_price, qqq_sma200, qqq_chg = get_index_signal("QQQ")
     vix_now = get_vix_signal()
 
 
 # ══════════════════════════════════════════════════════════
-# ③ 신호등 3개 — 세로 배치 (모바일 최적화)
+# ③ 신호등
 # ══════════════════════════════════════════════════════════
 
-# 신호 1: SPY
+# 신호 1-A: SPY
 if spy_price and spy_sma200:
     spy_ok  = spy_price > spy_sma200
     spy_gap = (spy_price - spy_sma200) / spy_sma200 * 100
+    # "오늘 등락"은 당일 종가 기준 전일 대비 변동률
+    chg_note = "📈 상승" if spy_chg > 0 else "📉 하락"
     if spy_ok:
         st.success(
-            f"**① 시장 추세 🟢 GO**\n\n"
+            f"**① 시장 추세 (SPY) 🟢 GO**\n\n"
             f"SPY ${spy_price:.1f} > SMA200 ${spy_sma200:.1f} ({spy_gap:+.1f}%)\n\n"
-            f"오늘 등락: **{spy_chg:+.2f}%**"
+            f"오늘 등락: **{spy_chg:+.2f}%** {chg_note} ← 전일 대비 당일 종가 변동"
         )
     else:
         st.error(
-            f"**① 시장 추세 🔴 주의**\n\n"
+            f"**① 시장 추세 (SPY) 🔴 주의**\n\n"
             f"SPY ${spy_price:.1f} < SMA200 ${spy_sma200:.1f} ({spy_gap:.1f}%)\n\n"
-            f"오늘 등락: **{spy_chg:+.2f}%** — 종목별 확인 필요"
+            f"오늘 등락: **{spy_chg:+.2f}%** {chg_note} — 종목별 확인 필요"
         )
 else:
-    st.warning("**① 시장 추세 ⚪ 데이터 없음** — 새로고침 해보세요")
+    st.warning("**① 시장 추세 (SPY) ⚪ 데이터 없음** — 새로고침 해보세요")
     spy_ok = False
+
+# 신호 1-B: QQQ (나스닥 기술주 추세 확인용)
+if qqq_price and qqq_sma200:
+    qqq_ok  = qqq_price > qqq_sma200
+    qqq_gap = (qqq_price - qqq_sma200) / qqq_sma200 * 100
+    qqq_note = "📈 상승" if qqq_chg > 0 else "📉 하락"
+    if qqq_ok:
+        st.success(
+            f"**① 시장 추세 (QQQ) 🟢 GO**\n\n"
+            f"QQQ ${qqq_price:.1f} > SMA200 ${qqq_sma200:.1f} ({qqq_gap:+.1f}%)\n\n"
+            f"오늘 등락: **{qqq_chg:+.2f}%** {qqq_note}"
+        )
+    else:
+        st.error(
+            f"**① 시장 추세 (QQQ) 🔴 주의**\n\n"
+            f"QQQ ${qqq_price:.1f} < SMA200 ${qqq_sma200:.1f} ({qqq_gap:.1f}%)\n\n"
+            f"오늘 등락: **{qqq_chg:+.2f}%** {qqq_note} — 기술주 주의"
+        )
+else:
+    st.warning("**① 시장 추세 (QQQ) ⚪ 데이터 없음**")
+    qqq_ok = False
 
 # 신호 2: VIX
 if vix_now:
@@ -210,20 +253,19 @@ st.divider()
 
 
 # ══════════════════════════════════════════════════════════
-# ④ 최종 판정 — 크고 명확하게
+# ④ 최종 판정
 # ══════════════════════════════════════════════════════════
-all_green = (
-    spy_price is not None and spy_price > (spy_sma200 or 0) and
-    vix_now is not None and vix_now <= 25 and
-    not event_risk
-)
+spy_ok_val  = spy_price is not None and spy_price > (spy_sma200 or 0)
+qqq_ok_val  = qqq_price is not None and qqq_price > (qqq_sma200 or 0)
+vix_ok_val  = vix_now is not None and vix_now <= 25
+all_green = spy_ok_val and qqq_ok_val and vix_ok_val and not event_risk
 
 if all_green:
     st.markdown("""
     <div style="background:#1a4731;border-radius:16px;padding:20px;text-align:center;margin:8px 0">
         <div style="font-size:3rem">✅</div>
         <div style="font-size:1.6rem;font-weight:bold;color:#00C853">GO — 진입 가능</div>
-        <div style="color:#aaa;margin-top:8px">3가지 조건 모두 충족</div>
+        <div style="color:#aaa;margin-top:8px">SPY·QQQ·VIX·이벤트 모두 충족</div>
     </div>
     """, unsafe_allow_html=True)
 elif event_risk:
@@ -234,12 +276,15 @@ elif event_risk:
         <div style="color:#aaa;margin-top:8px">내일 다시 확인하세요</div>
     </div>
     """, unsafe_allow_html=True)
-elif not spy_ok:
-    st.markdown("""
+elif not spy_ok_val or not qqq_ok_val:
+    idx_warn = []
+    if not spy_ok_val: idx_warn.append("SPY")
+    if not qqq_ok_val: idx_warn.append("QQQ")
+    st.markdown(f"""
     <div style="background:#2d2d00;border-radius:16px;padding:20px;text-align:center;margin:8px 0">
         <div style="font-size:3rem">🟡</div>
-        <div style="font-size:1.6rem;font-weight:bold;color:#FFD700">SPY 주의</div>
-        <div style="color:#aaa;margin-top:8px">스캔 가능 — 종목별 SMA200 확인</div>
+        <div style="font-size:1.6rem;font-weight:bold;color:#FFD700">{"/".join(idx_warn)} 주의</div>
+        <div style="color:#aaa;margin-top:8px">스캔 가능 — 종목별 SMA200 확인 필수</div>
     </div>
     """, unsafe_allow_html=True)
 else:
@@ -260,7 +305,15 @@ st.divider()
 st.markdown("## 🔍 종목 스캔")
 st.caption("필터: SMA200위 + SMA50위 + RSI<60 + 3개월+10% + 거래량500K+")
 
-# session_state 초기화 — 스캔 결과를 기억해서 종목 선택해도 사라지지 않음
+# 전략 선택 — RVOL 기준이 MOM/MR에 따라 달라짐
+strategy_mode = st.radio(
+    "전략 모드",
+    ["MOM (모멘텀)", "MR (평균회귀)"],
+    horizontal=True,
+    help="MOM: RVOL > 1.2 (거래량 동반 강세) | MR: RVOL < 0.8 (과열 없는 눌림목)"
+)
+is_mom = strategy_mode == "MOM (모멘텀)"
+
 if "scan_result" not in st.session_state:
     st.session_state.scan_result = None
 if "scan_sector" not in st.session_state:
@@ -274,13 +327,12 @@ sector = st.selectbox(
     key="sector_select"
 )
 
-# 조건 경고
 if not all_green:
     if event_risk:
         st.error("⚠️ 이벤트 있음 — 스캔 비권장")
-    elif not spy_ok:
-        st.warning("⚠️ SPY SMA200 아래 — 종목별 SMA200 확인 필수")
-    elif not vix_ok:
+    elif not spy_ok_val or not qqq_ok_val:
+        st.warning("⚠️ SPY/QQQ SMA200 아래 — 종목별 SMA200 확인 필수")
+    elif not vix_ok_val:
         st.warning("⚠️ VIX 높음 — 포지션 50% 줄이기")
 
 col_scan1, col_scan2 = st.columns([3, 1])
@@ -296,11 +348,9 @@ if clear_scan:
 if run_scan:
     with st.spinner("Finviz 스크리닝 중..."):
         result = run_screener(sector)
-    # 결과를 session_state에 저장 → 종목 선택해도 유지됨
     st.session_state.scan_result = result
     st.session_state.scan_sector = sector
 
-# session_state에서 결과 불러오기 (항상)
 result = st.session_state.scan_result
 
 if result is not None:
@@ -312,18 +362,14 @@ if result is not None:
             st.error(f"❌ 오류: {err[:200]}")
 
     elif result is None or (hasattr(result, "empty") and result.empty):
-        st.warning(
-            "⚠️ 조건 충족 종목 없음\n\n"
-            "섹터를 '전체'로 바꿔보세요"
-        )
+        st.warning("⚠️ 조건 충족 종목 없음\n\n섹터를 '전체'로 바꿔보세요")
     else:
         st.success(f"✅ {len(result)}개 종목 발견!")
 
-        # 모바일용 간략 테이블
+        # RVOL 컬럼 추가 표시
         show_cols = [c for c in ["Ticker","Company","Price","Change","Relative Volume"] if c in result.columns]
         st.dataframe(result[show_cols], use_container_width=True, hide_index=True)
 
-        # 티커 목록
         if "Ticker" in result.columns:
             tickers = result["Ticker"].tolist()
             st.markdown("#### 발견 종목")
@@ -331,11 +377,11 @@ if result is not None:
 
         st.divider()
 
-        # 종목 선택 → 차트
-        st.markdown("#### 📈 종목 차트 확인")
+        # ── 종목 체크리스트 ──
+        st.markdown("#### 📈 종목 체크리스트")
         if "Ticker" in result.columns:
             selected = st.selectbox(
-                "종목 선택 (목록에서 고르세요)",
+                "종목 선택",
                 options=tickers,
                 index=0
             )
@@ -360,16 +406,14 @@ if result is not None:
                     s50   = float(df60["SMA50"].iloc[-1])  if not pd.isna(df60["SMA50"].iloc[-1])  else None
                     rsi_v = float(df60["RSI14"].iloc[-1])  if not pd.isna(df60["RSI14"].iloc[-1])  else None
 
-                    # 3개월 수익률
                     chg_3m = None
                     if len(hist) >= 63:
                         chg_3m = (hist["Close"].iloc[-1] / hist["Close"].iloc[-63] - 1) * 100
 
-                    # 거래량 배율
                     avg_vol  = hist["Volume"].tail(20).mean()
                     rvol_now = hist["Volume"].iloc[-1] / avg_vol if avg_vol > 0 else 0
 
-                    # 체크 카드 2열
+                    # ── 체크카드 ──
                     cc1, cc2 = st.columns(2)
                     with cc1:
                         if s200 and curr > s200:
@@ -387,7 +431,6 @@ if result is not None:
                             st.error(f"❌ SMA50\n{'$'+f'{s50:.1f}' if s50 else 'N/A'} 아래")
                         st.info(f"💲 현재가\n${curr:.2f}")
 
-                    # 3개월 수익률 + 거래량
                     mc1, mc2 = st.columns(2)
                     with mc1:
                         if chg_3m is not None:
@@ -395,15 +438,91 @@ if result is not None:
                                 st.success(f"📈 3개월 수익률\n+{chg_3m:.1f}% ✅")
                             else:
                                 st.warning(f"📈 3개월 수익률\n{chg_3m:+.1f}%")
-                    with mc2:
-                        if rvol_now >= 1.5:
-                            st.success(f"📊 RVOL {rvol_now:.1f}x\n거래 활발")
-                        else:
-                            st.info(f"📊 RVOL {rvol_now:.1f}x")
 
-                    # 차트 (캔들 + SMA + 볼륨)
+                    with mc2:
+                        # ── RVOL: MOM vs MR 분기 ──
+                        if is_mom:
+                            # MOM: RVOL > 1.2 = 거래량 동반 상승 → 긍정
+                            if rvol_now > 1.2:
+                                st.success(f"✅ RVOL {rvol_now:.1f}x\n[MOM] 거래량 동반 ↑")
+                            elif rvol_now > 0.8:
+                                st.warning(f"🟡 RVOL {rvol_now:.1f}x\n[MOM] 거래량 보통")
+                            else:
+                                st.error(f"❌ RVOL {rvol_now:.1f}x\n[MOM] 거래량 부족")
+                        else:
+                            # MR: RVOL < 0.8 = 조용한 눌림목 → 긍정
+                            if rvol_now < 0.8:
+                                st.success(f"✅ RVOL {rvol_now:.1f}x\n[MR] 조용한 눌림목 ↓")
+                            elif rvol_now < 1.2:
+                                st.warning(f"🟡 RVOL {rvol_now:.1f}x\n[MR] 보통 수준")
+                            else:
+                                st.error(f"❌ RVOL {rvol_now:.1f}x\n[MR] 과열, 눌림목 아님")
+
+                    # ── 소셜미디어 감성지수 ──
+                    st.divider()
+                    st.markdown(f"#### 💬 소셜미디어 감성지수 — {selected}")
+                    st.caption("StockTwits 최근 메시지 기반 | 새로고침마다 업데이트")
+
+                    with st.spinner("감성 분석 중..."):
+                        sentiment_pct = get_social_sentiment(selected)
+
+                    if sentiment_pct is not None:
+                        # 색상 결정
+                        if sentiment_pct >= 65:
+                            bar_color = "#00C853"
+                            label = "🟢 긍정 신호"
+                            desc  = "투자자 심리 강세 — 모멘텀 뒷받침"
+                        elif sentiment_pct >= 45:
+                            bar_color = "#FFD700"
+                            label = "🟡 중립"
+                            desc  = "방향성 불분명 — 추가 확인 필요"
+                        else:
+                            bar_color = "#FF5252"
+                            label = "🔴 부정 신호"
+                            desc  = "투자자 심리 약세 — 진입 주의"
+
+                        neg_pct = 100 - sentiment_pct
+
+                        # 게이지 바
+                        st.markdown(f"""
+                        <div style="margin:8px 0">
+                            <div style="display:flex;justify-content:space-between;font-size:0.85rem;color:#aaa">
+                                <span>부정 {neg_pct:.0f}%</span>
+                                <span>긍정 {sentiment_pct:.0f}%</span>
+                            </div>
+                            <div style="background:#333;border-radius:8px;height:22px;overflow:hidden">
+                                <div style="width:{sentiment_pct}%;background:{bar_color};
+                                            height:100%;border-radius:8px;
+                                            transition:width 0.4s ease"></div>
+                            </div>
+                            <div style="text-align:center;font-size:1.1rem;font-weight:bold;
+                                        margin-top:6px;color:{bar_color}">{label}</div>
+                            <div style="text-align:center;color:#aaa;font-size:0.85rem">{desc}</div>
+                        </div>
+                        """, unsafe_allow_html=True)
+
+                        # 판단 기준 안내
+                        with st.expander("감성지수 판단 기준"):
+                            st.markdown("""
+                            | 수치 | 의미 |
+                            |------|------|
+                            | **65% 이상** | 🟢 긍정 — MOM 진입 뒷받침 |
+                            | **45~64%** | 🟡 중립 — 단독 판단 금물 |
+                            | **44% 이하** | 🔴 부정 — 진입 재검토 |
+
+                            ※ 수치가 높을수록 긍정(Bullish) 비율 높음  
+                            ※ 단독 지표로 사용 금지 — SMA/RSI/RVOL과 종합 판단
+                            """)
+                    else:
+                        st.info(
+                            "⚪ 감성 데이터 없음\n\n"
+                            "StockTwits에 해당 종목 최근 메시지가 부족하거나 API 일시 제한 상태입니다.\n"
+                            "1~2분 후 새로고침 해보세요."
+                        )
+
+                    # ── 차트 ──
+                    st.divider()
                     if PLOTLY_OK:
-                        from plotly.subplots import make_subplots
                         fig = make_subplots(
                             rows=2, cols=1,
                             shared_xaxes=True,
@@ -462,18 +581,16 @@ if result is not None:
                         st.line_chart(df60[["Close","SMA50","SMA200"]])
                         st.bar_chart(df60["Volume"])
 
-
-                    # Finviz 차트 링크
                     st.markdown(
                         f"[👉 Finviz {selected} 차트 열기]"
                         f"(https://finviz.com/quote.ashx?t={selected})"
                     )
 
-                    # 손절/목표가
+                    # ── 손절/목표가 ──
                     st.divider()
-                    stop   = curr * 0.95
-                    tgt1   = curr * 1.03
-                    tgt2   = curr * 1.07
+                    stop = curr * 0.95
+                    tgt1 = curr * 1.03
+                    tgt2 = curr * 1.07
                     sc1, sc2, sc3 = st.columns(3)
                     with sc1:
                         st.error(f"🛑 손절\n${stop:.2f}\n(-5%)")
@@ -484,16 +601,21 @@ if result is not None:
 
 st.divider()
 
+
 # ══════════════════════════════════════════════════════════
-# ⑥ 핵심 원칙 (항상 보이게)
+# ⑥ 핵심 체크리스트
 # ══════════════════════════════════════════════════════════
-st.markdown("### 📋 체크리스트")
+st.markdown("### 📋 진입 체크리스트")
 st.markdown("""
-□ 신호등 3개 초록?  
+□ SPY + QQQ 신호등 초록?  
+□ VIX 25 이하?  
+□ 이벤트 없음?  
 □ 종목 SMA200 위?  
 □ 종목 SMA50 위?  
 □ RSI 60 미만?  
-□ 손절가 설정?  
+□ RVOL 전략 기준 충족? (MOM > 1.2 / MR < 0.8)  
+□ 소셜 감성지수 45% 이상?  
+□ 손절가 설정 완료?  
 → 전부 ✅면 진입
 """)
 st.error("**손절가 미설정 = 진입 금지**")
