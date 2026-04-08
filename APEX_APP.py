@@ -689,10 +689,11 @@ with tab_report:
 
                         if r["score"] in ["A","B+"]:
                             st.divider()
-                            g1,g2,g3 = st.columns(3)
+                            g1,g2,g3,g4 = st.columns(4)
                             with g1: st.info(f"⏰ **매수**\n\n장 마감 30분전\nKST 05:30\n지정가 ${r['price']*0.998:.2f}")
-                            with g2: st.error(f"🛑 **재난손절**\n\n진입가−3ATR\n${r['price'] - r['atr']*3:.2f}\n({-r['atr']*3/r['price']*100:.1f}%)")
-                            with g3: st.success(f"🎯 **익절**\n\nRSI(2)>70 매도\n최대 10일 타임스탑")
+                            with g2: st.success(f"🎯 **①익절**\n\nRSI(2)>70\n시 매도")
+                            with g3: st.warning(f"⏱️ **②타임스탑**\n\n최대 10일\n보유 후 청산")
+                            with g4: st.error(f"🛑 **③재난손절**\n\n진입가−3ATR\n${r['price'] - r['atr']*3:.2f}\n({-r['atr']*3/r['price']*100:.1f}%)")
                             st.markdown(f"📐 **포지션:** {r['shares']}주 × ${r['price']} = **${r['pos_value']:,}** (계좌 {r['pos_pct']}%)")
                             if r['pos_pct'] > 25: st.error(f"⚠️ 과집중 {r['pos_pct']}%")
                         if r["earn_blocked"]: st.error(f"🚨 어닝 3일 이내 — 진입 금지")
@@ -751,9 +752,10 @@ with tab_report:
                         if r["score"] in ["A","B+"]:
                             st.divider()
                             g1,g2,g3 = st.columns(3)
-                            with g1: st.info(f"⏰ **매수**\n\n장 개장 30분~1시간 후\nKST 23:00~23:30\n브레이크아웃 확인")
-                            with g2: st.error(f"🛑 **재난손절**\n\n진입가−3ATR\n${r['price'] - r['atr']*3:.2f}")
-                            with g3: st.success(f"🎯 **익절**\n\n+8~12% 또는\nRSI(14)>75\n5~15일 홀딩")
+                            with g1: st.info(f"⏰ **매수**\n\n장 개장 30분~1시간 후\nKST 23:00~23:30")
+                            with g2: st.success(f"🎯 **①익절**\n\n+8% 도달 시\n즉시 매도")
+                            with g3: st.warning(f"⏱️ **②타임스탑**\n\n최대 15일\n보유 후 청산")
+                            st.caption("⚠️ MOM 백테스트 결과: +8% 익절 + 15일 타임스탑이 최적 (RSI익절·3ATR손절은 성과 저하)")
                             st.markdown(f"📐 **포지션:** {r['shares']}주 × ${r['price']} = **${r['pos_value']:,}** (계좌 {r['pos_pct']}%)")
                         if r["earn_blocked"]: st.error(f"🚨 어닝 3일 이내 — 진입 금지")
 
@@ -1640,4 +1642,11 @@ with tab_manual:
     → 공통 + MOM 전용 전부 ✅면 진입
     """)
 
-    st.error("**청산 3단계: ① RSI(2)>70 익절 → ② 10일 타임스탑 → ③ 진입가−3ATR 재난손절 (극단 폭락 방어)**")
+    st.markdown("**📌 청산 규칙 (백테스트 검증)**")
+    st.markdown("""
+    | | MR (평균회귀) | MOM (모멘텀) |
+    |---|---|---|
+    | ①익절 | RSI(2)>70 매도 | **+8% 도달 시 매도** |
+    | ②타임스탑 | 최대 **10일** | 최대 **15일** |
+    | ③재난손절 | 진입가−3ATR | **없음** (성과 저하) |
+    """)
