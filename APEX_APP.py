@@ -1015,23 +1015,43 @@ with tab_manual:
                         with st.spinner(f"{selected} 어닝 날짜 확인 중..."):
                             earn_info = get_earnings_info(selected)
 
-                        # ── 체크카드 ──
-                        cc1, cc2 = st.columns(2)
-                        with cc1:
-                            if s200 and curr > s200:
-                                st.success(f"✅ SMA200\n${s200:.1f} 위")
-                            else:
-                                st.error(f"❌ SMA200\n{'$'+f'{s200:.1f}' if s200 else 'N/A'} 아래")
-                            if rsi_v and rsi_v < 60:
-                                st.success(f"✅ RSI {rsi_v:.0f}\n과매수 아님")
-                            elif rsi_v:
-                                st.error(f"❌ RSI {rsi_v:.0f}\n과매수")
-                        with cc2:
-                            if s50 and curr > s50:
-                                st.success(f"✅ SMA50\n${s50:.1f} 위")
-                            else:
-                                st.error(f"❌ SMA50\n{'$'+f'{s50:.1f}' if s50 else 'N/A'} 아래")
-                            st.info(f"💲 현재가\n${curr:.2f}")
+                        # ── 체크카드 (MOM/MR 분기) ──
+                        if is_mom:
+                            # MOM: SMA200 위, SMA50 위, RSI<60, 현재가
+                            cc1, cc2 = st.columns(2)
+                            with cc1:
+                                if s200 and curr > s200:
+                                    st.success(f"✅ SMA200\n${s200:.1f} 위")
+                                else:
+                                    st.error(f"❌ SMA200\n{'$'+f'{s200:.1f}' if s200 else 'N/A'} 아래")
+                                if rsi_v and rsi_v < 60:
+                                    st.success(f"✅ RSI(14) {rsi_v:.0f}\n과매수 아님")
+                                elif rsi_v:
+                                    st.error(f"❌ RSI(14) {rsi_v:.0f}\n과매수")
+                            with cc2:
+                                if s50 and curr > s50:
+                                    st.success(f"✅ SMA50\n${s50:.1f} 위")
+                                else:
+                                    st.error(f"❌ SMA50\n{'$'+f'{s50:.1f}' if s50 else 'N/A'} 아래")
+                                st.info(f"💲 현재가\n${curr:.2f}")
+                        else:
+                            # MR: SMA200 위, RSI(2), BB하단, 연속하락
+                            cc1, cc2 = st.columns(2)
+                            with cc1:
+                                if s200 and curr > s200:
+                                    st.success(f"✅ SMA200 위\n${s200:.1f}")
+                                else:
+                                    st.error(f"❌ SMA200 아래\n{'$'+f'{s200:.1f}' if s200 else 'N/A'}")
+                                if rsi2_v is not None and rsi2_v <= 15:
+                                    st.success(f"✅ RSI(2) {rsi2_v:.1f}\n≤15 진입신호")
+                                elif rsi2_v is not None:
+                                    st.warning(f"🟡 RSI(2) {rsi2_v:.1f}\n>15 대기")
+                            with cc2:
+                                if bb_low is not None and curr <= bb_low * 1.005:
+                                    st.success(f"✅ BB하단 터치\nBB↓ ${bb_low:.2f}")
+                                elif bb_low is not None:
+                                    st.warning(f"🟡 BB하단 미접촉\nBB↓ ${bb_low:.2f}")
+                                st.info(f"💲 현재가 ${curr:.2f}\n{'SMA50 위' if s50 and curr > s50 else 'SMA50 아래 (MR 정상)'}")
 
                         # ══════════════════════════════════════════
                         # SMA200 방향성 + Minervini SEPA 정렬
@@ -1093,9 +1113,9 @@ with tab_manual:
                             s50  is not None and curr > s50,
                         ])
                         trend_labels = {
-                            4: ("🟢 추세 구조 최상", "4/4 — MOM 진입 최적 환경"),
-                            3: ("🟡 추세 구조 양호", "3/4 — MOM 진입 가능, 세부 확인"),
-                            2: ("🟠 추세 구조 혼조", "2/4 — MR 전략 또는 관망 검토"),
+                            4: ("🟢 추세 구조 최상", "4/4 — MOM 진입 최적 환경" if is_mom else "4/4 — 강한 추세 속 눌림 (MR 양호)"),
+                            3: ("🟡 추세 구조 양호", "3/4 — MOM 진입 가능, 세부 확인" if is_mom else "3/4 — MR 눌림목 탐색 적합"),
+                            2: ("🟠 추세 구조 혼조", "2/4 — MR 전략 또는 관망 검토" if is_mom else "2/4 — MR 진입 시 신중"),
                             1: ("🔴 추세 구조 취약", "1/4 — 진입 비권장"),
                             0: ("🔴 추세 구조 붕괴", "0/4 — 진입 금지"),
                         }
@@ -1441,24 +1461,30 @@ with tab_manual:
                             f"(https://finviz.com/quote.ashx?t={selected})"
                         )
 
-                        # ── 손절/목표가 + ATR 포지션 사이징 ──
+                        # ── 손절/목표가 (MOM/MR 분기) ──
                         st.divider()
                         st.markdown("#### 🛑 손절 / 목표가")
-                        tgt1 = curr * 1.03
-                        tgt2 = curr * 1.07
-                        sc1, sc2, sc3 = st.columns(3)
-                        with sc1:
-                            if atr_val:
-                                stop_3atr = curr - atr_val * 3
-                                stop_pct = -atr_val * 3 / curr * 100
-                                st.error(f"🛑 재난손절 (3ATR)\n${stop_3atr:.2f}\n({stop_pct:.1f}%)")
-                            else:
-                                st.error("🛑 손절\nATR 계산 불가")
-                        with sc2:
-                            st.success(f"🎯 목표1\n${tgt1:.2f}\n(+3%)")
-                        with sc3:
-                            st.success(f"🎯 목표2\n${tgt2:.2f}\n(+7%)")
-                        st.caption("⚠️ 1차 익절: RSI(2)>70 | 2차 타임스탑: 최대 10일 보유 | 3차 재난손절: 진입가 − 3×ATR")
+                        if is_mom:
+                            sc1, sc2 = st.columns(2)
+                            with sc1:
+                                st.success(f"🎯 ①익절\n+8% 도달 시 매도\n목표 ${curr * 1.08:.2f}")
+                            with sc2:
+                                st.warning(f"⏱️ ②타임스탑\n최대 15일 보유 후 청산")
+                            st.caption("⚠️ MOM 백테스트 결과: +8% 익절 + 15일 타임스탑이 최적 (재난손절 없음)")
+                        else:
+                            sc1, sc2, sc3 = st.columns(3)
+                            with sc1:
+                                st.success(f"🎯 ①익절\nRSI(2)>70 시 매도")
+                            with sc2:
+                                st.warning(f"⏱️ ②타임스탑\n최대 10일 보유 후 청산")
+                            with sc3:
+                                if atr_val:
+                                    stop_3atr = curr - atr_val * 3
+                                    stop_pct = -atr_val * 3 / curr * 100
+                                    st.error(f"🛑 ③재난손절\n진입가−3ATR\n${stop_3atr:.2f} ({stop_pct:.1f}%)")
+                                else:
+                                    st.error("🛑 ③재난손절\nATR 계산 불가")
+                            st.caption("⚠️ MR 백테스트 결과: RSI(2)>70 익절 + 10일 타임스탑 + 3ATR 재난손절")
 
                         # ══════════════════════════════════════════
                         # ATR 기반 포지션 사이징
@@ -1660,4 +1686,4 @@ with tab_manual:
     | ①익절 | RSI(2)>70 매도 | **+8% 도달 시 매도** |
     | ②타임스탑 | 최대 **10일** | 최대 **15일** |
     | ③재난손절 | 진입가−3ATR | **없음** (성과 저하) |
-    """)    
+    """)
