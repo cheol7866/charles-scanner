@@ -404,21 +404,26 @@ with st.spinner("시장 데이터 확인 중..."):
 
 # 신호 1-A: SPY
 if spy_price and spy_sma200:
-    spy_ok  = spy_price > spy_sma200
     spy_gap = (spy_price - spy_sma200) / spy_sma200 * 100
-    # "오늘 등락"은 당일 종가 기준 전일 대비 변동률
+    spy_ok  = spy_gap >= 3  # 3% 마진 기준
     chg_note = "📈 상승" if spy_chg > 0 else "📉 하락"
-    if spy_ok:
+    if spy_gap >= 3:
         st.success(
             f"**① 시장 추세 (SPY) 🟢 GO**\n\n"
-            f"SPY ${spy_price:.1f} > SMA200 ${spy_sma200:.1f} ({spy_gap:+.1f}%)\n\n"
-            f"오늘 등락: **{spy_chg:+.2f}%** {chg_note} ← 전일 대비 당일 종가 변동"
+            f"SPY ${spy_price:.1f} > SMA200 ${spy_sma200:.1f} (**{spy_gap:+.1f}%** ≥ 3% 안전마진)\n\n"
+            f"오늘 등락: **{spy_chg:+.2f}%** {chg_note}"
+        )
+    elif spy_gap > 0:
+        st.warning(
+            f"**① 시장 추세 (SPY) 🟡 경계**\n\n"
+            f"SPY ${spy_price:.1f} > SMA200 ${spy_sma200:.1f} (**{spy_gap:+.1f}%** < 3% 안전마진 미달)\n\n"
+            f"오늘 등락: **{spy_chg:+.2f}%** {chg_note} — MOM 진입 금지 구간"
         )
     else:
         st.error(
             f"**① 시장 추세 (SPY) 🔴 주의**\n\n"
             f"SPY ${spy_price:.1f} < SMA200 ${spy_sma200:.1f} ({spy_gap:.1f}%)\n\n"
-            f"오늘 등락: **{spy_chg:+.2f}%** {chg_note} — 종목별 확인 필요"
+            f"오늘 등락: **{spy_chg:+.2f}%** {chg_note}"
         )
 else:
     st.warning("**① 시장 추세 (SPY) ⚪ 데이터 없음** — 새로고침 해보세요")
@@ -426,20 +431,26 @@ else:
 
 # 신호 1-B: QQQ (나스닥 기술주 추세 확인용)
 if qqq_price and qqq_sma200:
-    qqq_ok  = qqq_price > qqq_sma200
     qqq_gap = (qqq_price - qqq_sma200) / qqq_sma200 * 100
+    qqq_ok  = qqq_gap >= 3  # 3% 마진 기준
     qqq_note = "📈 상승" if qqq_chg > 0 else "📉 하락"
-    if qqq_ok:
+    if qqq_gap >= 3:
         st.success(
             f"**① 시장 추세 (QQQ) 🟢 GO**\n\n"
-            f"QQQ ${qqq_price:.1f} > SMA200 ${qqq_sma200:.1f} ({qqq_gap:+.1f}%)\n\n"
+            f"QQQ ${qqq_price:.1f} > SMA200 ${qqq_sma200:.1f} (**{qqq_gap:+.1f}%** ≥ 3% 안전마진)\n\n"
             f"오늘 등락: **{qqq_chg:+.2f}%** {qqq_note}"
+        )
+    elif qqq_gap > 0:
+        st.warning(
+            f"**① 시장 추세 (QQQ) 🟡 경계**\n\n"
+            f"QQQ ${qqq_price:.1f} > SMA200 ${qqq_sma200:.1f} (**{qqq_gap:+.1f}%** < 3% 안전마진 미달)\n\n"
+            f"오늘 등락: **{qqq_chg:+.2f}%** {qqq_note} — MOM 진입 금지 구간"
         )
     else:
         st.error(
             f"**① 시장 추세 (QQQ) 🔴 주의**\n\n"
             f"QQQ ${qqq_price:.1f} < SMA200 ${qqq_sma200:.1f} ({qqq_gap:.1f}%)\n\n"
-            f"오늘 등락: **{qqq_chg:+.2f}%** {qqq_note} — 기술주 주의"
+            f"오늘 등락: **{qqq_chg:+.2f}%** {qqq_note}"
         )
 else:
     st.warning("**① 시장 추세 (QQQ) ⚪ 데이터 없음**")
@@ -486,10 +497,15 @@ st.divider()
 # ══════════════════════════════════════════════════════════
 # ④ 최종 판정
 # ══════════════════════════════════════════════════════════
-spy_ok_val  = spy_price is not None and spy_price > (spy_sma200 or 0)
-qqq_ok_val  = qqq_price is not None and qqq_price > (qqq_sma200 or 0)
+spy_ok_val  = spy_price is not None and spy_sma200 is not None and ((spy_price - spy_sma200) / spy_sma200 * 100) >= 3
+qqq_ok_val  = qqq_price is not None and qqq_sma200 is not None and ((qqq_price - qqq_sma200) / qqq_sma200 * 100) >= 3
 vix_ok_val  = vix_now is not None and vix_now <= 25
 all_green = spy_ok_val and qqq_ok_val and vix_ok_val and not event_risk
+
+# 경계 구간 판별 (SMA200 위이지만 3% 미만)
+_spy_border = spy_price is not None and spy_sma200 is not None and spy_price > spy_sma200 and not spy_ok_val
+_qqq_border = qqq_price is not None and qqq_sma200 is not None and qqq_price > qqq_sma200 and not qqq_ok_val
+_is_border = (_spy_border or _qqq_border) and vix_ok_val and not event_risk
 
 if all_green:
     st.markdown("""
@@ -505,6 +521,14 @@ elif event_risk:
         <div style="font-size:3rem">🔴</div>
         <div style="font-size:1.6rem;font-weight:bold;color:#FF5252">이벤트 주의</div>
         <div style="color:#aaa;margin-top:8px">내일 다시 확인하세요</div>
+    </div>
+    """, unsafe_allow_html=True)
+elif _is_border:
+    st.markdown("""
+    <div style="background:#2d2d00;border-radius:16px;padding:20px;text-align:center;margin:8px 0">
+        <div style="font-size:3rem">🟡</div>
+        <div style="font-size:1.6rem;font-weight:bold;color:#FFD700">경계 구간 — MR만 가능</div>
+        <div style="color:#aaa;margin-top:8px">SPY/QQQ SMA200 위이나 3% 안전마진 미달 → MOM 금지</div>
     </div>
     """, unsafe_allow_html=True)
 elif not spy_ok_val or not qqq_ok_val:
@@ -667,8 +691,8 @@ with tab_report:
                             st.divider()
                             g1,g2,g3 = st.columns(3)
                             with g1: st.info(f"⏰ **매수**\n\n장 마감 30분전\nKST 05:30\n지정가 ${r['price']*0.998:.2f}")
-                            with g2: st.error(f"🛑 **손절**\n\nSMA20 ${r['sma20']}\n({(r['sma20']/r['price']-1)*100:.1f}%)")
-                            with g3: st.success(f"🎯 **익절**\n\nRSI(2)>70 시 매도\n2~5일 홀딩")
+                            with g2: st.error(f"🛑 **재난손절**\n\n진입가−3ATR\n${r['price'] - r['atr']*3:.2f}\n({-r['atr']*3/r['price']*100:.1f}%)")
+                            with g3: st.success(f"🎯 **익절**\n\nRSI(2)>70 매도\n최대 10일 타임스탑")
                             st.markdown(f"📐 **포지션:** {r['shares']}주 × ${r['price']} = **${r['pos_value']:,}** (계좌 {r['pos_pct']}%)")
                             if r['pos_pct'] > 25: st.error(f"⚠️ 과집중 {r['pos_pct']}%")
                         if r["earn_blocked"]: st.error(f"🚨 어닝 3일 이내 — 진입 금지")
@@ -728,7 +752,7 @@ with tab_report:
                             st.divider()
                             g1,g2,g3 = st.columns(3)
                             with g1: st.info(f"⏰ **매수**\n\n장 개장 30분~1시간 후\nKST 23:00~23:30\n브레이크아웃 확인")
-                            with g2: st.error(f"🛑 **손절**\n\nSMA20 ${r['sma20']}")
+                            with g2: st.error(f"🛑 **재난손절**\n\n진입가−3ATR\n${r['price'] - r['atr']*3:.2f}")
                             with g3: st.success(f"🎯 **익절**\n\n+8~12% 또는\nRSI(14)>75\n5~15일 홀딩")
                             st.markdown(f"📐 **포지션:** {r['shares']}주 × ${r['price']} = **${r['pos_value']:,}** (계좌 {r['pos_pct']}%)")
                         if r["earn_blocked"]: st.error(f"🚨 어닝 3일 이내 — 진입 금지")
@@ -1407,21 +1431,21 @@ with tab_manual:
                         # ── 손절/목표가 + ATR 포지션 사이징 ──
                         st.divider()
                         st.markdown("#### 🛑 손절 / 목표가")
-                        s20 = float(df60["SMA20"].iloc[-1]) if not pd.isna(df60["SMA20"].iloc[-1]) else None
                         tgt1 = curr * 1.03
                         tgt2 = curr * 1.07
                         sc1, sc2, sc3 = st.columns(3)
                         with sc1:
-                            if s20:
-                                stop_pct = (s20 - curr) / curr * 100
-                                st.error(f"🛑 손절 (SMA20)\n${s20:.2f}\n({stop_pct:.1f}%)\n종가 이탈 시 청산")
+                            if atr_val:
+                                stop_3atr = curr - atr_val * 3
+                                stop_pct = -atr_val * 3 / curr * 100
+                                st.error(f"🛑 재난손절 (3ATR)\n${stop_3atr:.2f}\n({stop_pct:.1f}%)")
                             else:
-                                st.error("🛑 손절\nSMA20 계산 불가")
+                                st.error("🛑 손절\nATR 계산 불가")
                         with sc2:
                             st.success(f"🎯 목표1\n${tgt1:.2f}\n(+3%)")
                         with sc3:
                             st.success(f"🎯 목표2\n${tgt2:.2f}\n(+7%)")
-                        st.caption("⚠️ 손절 기준: SMA20 아래 종가 마감 시 청산 — 장중 노이즈에 흔들리지 말 것")
+                        st.caption("⚠️ 1차 익절: RSI(2)>70 | 2차 타임스탑: 최대 10일 보유 | 3차 재난손절: 진입가 − 3×ATR")
 
                         # ══════════════════════════════════════════
                         # ATR 기반 포지션 사이징
@@ -1441,7 +1465,7 @@ with tab_manual:
                             with ac1:
                                 st.metric("ATR(14)", f"${atr_val:.2f}", f"현가 대비 {atr_pct:.1f}%")
                             with ac2:
-                                st.metric("1ATR 손절가", f"${curr - atr_val:.2f}", f"−{atr_pct:.1f}%")
+                                st.metric("3ATR 재난손절", f"${curr - atr_val * 3:.2f}", f"−{atr_pct*3:.1f}%")
                             with ac3:
                                 st.metric("2ATR 목표가", f"${curr + atr_val * 2:.2f}", f"+{atr_pct*2:.1f}%")
 
@@ -1475,8 +1499,7 @@ with tab_manual:
                             shares_atr   = int(risk_dollar / atr_val)           # ATR 기준 주수
                             pos_value    = shares_atr * curr                     # 포지션 금액
                             pos_pct      = pos_value / account_size * 100        # 계좌 대비 비중
-                            stop_1atr    = curr - atr_val                        # 1 ATR 손절가
-                            stop_2atr    = curr - atr_val * 0.5                  # 0.5 ATR 타이트 손절
+                            stop_3atr    = curr - atr_val * 3                    # 3 ATR 재난손절
                             tgt_2r       = curr + atr_val * 2                    # R:R 2배 목표
                             tgt_3r       = curr + atr_val * 3                    # R:R 3배 목표
 
@@ -1514,33 +1537,33 @@ with tab_manual:
                             st.markdown("##### 🗂️ 시나리오 테이블")
                             scenario_data = {
                                 "구분": [
-                                    "0.5 ATR 손절 (타이트)",
-                                    "1.0 ATR 손절 (기본)",
-                                    "SMA20 손절 (추세기반)",
+                                    "1.0 ATR 손절 (타이트)",
+                                    "2.0 ATR 손절 (보통)",
+                                    "★ 3.0 ATR 재난손절 (MR 권장)",
                                     "─────",
                                     "R:R 2배 목표 (1ATR 기준)",
                                     "R:R 3배 목표 (1ATR 기준)",
                                 ],
                                 "가격": [
-                                    f"${stop_2atr:.2f}",
-                                    f"${stop_1atr:.2f}",
-                                    f"${s20:.2f}" if s20 else "계산불가",
+                                    f"${curr - atr_val:.2f}",
+                                    f"${curr - atr_val * 2:.2f}",
+                                    f"${curr - atr_val * 3:.2f}",
                                     "─",
                                     f"${tgt_2r:.2f}",
                                     f"${tgt_3r:.2f}",
                                 ],
                                 "현가 대비": [
-                                    f"−{(curr - stop_2atr)/curr*100:.1f}%",
                                     f"−{atr_pct:.1f}%",
-                                    f"{(s20 - curr)/curr*100:.1f}%" if s20 else "─",
+                                    f"−{atr_pct*2:.1f}%",
+                                    f"−{atr_pct*3:.1f}%",
                                     "─",
                                     f"+{atr_pct*2:.1f}%",
                                     f"+{atr_pct*3:.1f}%",
                                 ],
                                 "예상 손익 (해당 주수)": [
-                                    f"−${(curr - stop_2atr)*shares_atr:,.0f}",
-                                    f"−${risk_dollar:,.0f}",
-                                    f"−${(curr - s20)*shares_atr:,.0f}" if s20 else "─",
+                                    f"−${atr_val*shares_atr:,.0f}",
+                                    f"−${atr_val*2*shares_atr:,.0f}",
+                                    f"−${atr_val*3*shares_atr:,.0f}",
                                     "─",
                                     f"+${atr_val*2*shares_atr:,.0f}",
                                     f"+${atr_val*3*shares_atr:,.0f}",
@@ -1593,7 +1616,7 @@ with tab_manual:
     □ RSI(14) 60 미만? (과매수 아님)  
     □ RVOL 전략 기준 충족? (MOM > 1.2 / MR < 1.2)  
     □ **ATR 포지션 사이징 완료?** (계좌 × 리스크% ÷ ATR → 주수 확정)  
-    □ 손절가 설정 완료? (SMA20 아래 종가 마감 시 청산)  
+    □ 손절가 설정 완료? (1차 RSI(2)>70 익절 / 2차 10일 타임스탑 / 3차 3ATR 재난손절)  
     """)
 
     st.markdown("**🟠 MR 전용 추가 체크 (APEX 2.0 핵심)**")
@@ -1617,4 +1640,4 @@ with tab_manual:
     → 공통 + MOM 전용 전부 ✅면 진입
     """)
 
-    st.error("**손절 원칙: SMA20 아래 종가 마감 = 즉시 청산 / 장중 노이즈에 흔들리지 말 것**")
+    st.error("**청산 3단계: ① RSI(2)>70 익절 → ② 10일 타임스탑 → ③ 진입가−3ATR 재난손절 (극단 폭락 방어)**")
