@@ -270,7 +270,7 @@ def run_finviz_dr(mode, sectors_list):
         else:
             filters = {
                 "200-Day Simple Moving Average": "Price above SMA200",
-                "RSI (14)": "Oversold (<40)",
+                "RSI (14)": "Oversold (40)",
                 "Average Volume": "Over 500K",
             }
         if sectors_list and len(sectors_list) == 1 and sectors_list[0] != "전체":
