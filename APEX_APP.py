@@ -598,7 +598,7 @@ if _spy_rsi2_dr <= 10:
 
 st.divider()
 
-tab_report, tab_manual = st.tabs(["📊 Daily Report (자동)", "🚦 신호등 + 수동 분석"])
+tab_report, tab_manual, tab_hold = st.tabs(["📊 Daily Report (자동)", "🚦 신호등 + 수동 분석", "📌 보유 종목 모니터"])
 
 
 # ──────────────────────────────────────────
@@ -1687,3 +1687,157 @@ with tab_manual:
     | ②타임스탑 | 최대 **10일** | 최대 **15일** |
     | ③재난손절 | 진입가−3ATR | **없음** (성과 저하) |
     """)
+
+# ──────────────────────────────────────────
+# TAB 3: 보유 종목 모니터
+# ──────────────────────────────────────────
+with tab_hold:
+    st.markdown("### 📌 보유 종목 모니터")
+    st.caption("보유 중인 종목의 청산 조건만 체크 — 스크리너(진입용)와 별개")
+
+    st.info("💡 **스크리너에서 종목이 사라졌다 = 팔아라가 아닙니다.**\n\n"
+            "스크리너는 진입용이고, 청산은 아래 규칙으로만 판단하세요.")
+
+    # 사용자 입력
+    h_c1, h_c2 = st.columns(2)
+    with h_c1:
+        h_ticker = st.text_input("📌 보유 종목 티커", value="", placeholder="예: AAOI", key="hold_ticker").upper().strip()
+    with h_c2:
+        h_mode = st.radio("전략", ["MR (평균회귀)", "MOM (모멘텀)"], horizontal=True, key="hold_mode")
+
+    h_c3, h_c4 = st.columns(2)
+    with h_c3:
+        h_entry_price = st.number_input("💰 진입가 (USD)", min_value=0.01, value=10.0, step=0.01, key="hold_entry")
+    with h_c4:
+        h_entry_date = st.date_input("📅 진입일", value=datetime.date.today(), key="hold_date")
+
+    if h_ticker and st.button("🔍 청산 조건 체크", type="primary", use_container_width=True, key="hold_check"):
+        with st.spinner(f"{h_ticker} 분석 중..."):
+            try:
+                hdf = yf.download(h_ticker, period="60d", progress=False)
+                if hdf.empty or len(hdf) < 5:
+                    st.error(f"❌ {h_ticker} 데이터 없음")
+                else:
+                    if isinstance(hdf.columns, pd.MultiIndex):
+                        hdf.columns = hdf.columns.get_level_values(0)
+
+                    h_close = hdf["Close"]
+                    h_high = hdf["High"]
+                    h_low = hdf["Low"]
+                    h_curr = float(h_close.iloc[-1])
+                    h_pnl = (h_curr - h_entry_price) / h_entry_price * 100
+
+                    # RSI(2)
+                    hd2 = h_close.diff()
+                    hg2 = hd2.clip(lower=0).ewm(alpha=1/2, min_periods=2, adjust=False).mean()
+                    hl2 = (-hd2.clip(upper=0)).ewm(alpha=1/2, min_periods=2, adjust=False).mean()
+                    h_rsi2 = float((100 - 100/(1 + hg2/hl2.replace(0, 1e-10))).iloc[-1])
+
+                    # RSI(14)
+                    hd14 = h_close.diff()
+                    hg14 = hd14.clip(lower=0).ewm(alpha=1/14, min_periods=14, adjust=False).mean()
+                    hl14 = (-hd14.clip(upper=0)).ewm(alpha=1/14, min_periods=14, adjust=False).mean()
+                    h_rsi14 = float((100 - 100/(1 + hg14/hl14.replace(0, 1e-10))).iloc[-1])
+
+                    # ATR(14)
+                    h_tr = pd.concat([
+                        h_high - h_low,
+                        (h_high - h_close.shift(1)).abs(),
+                        (h_low - h_close.shift(1)).abs()
+                    ], axis=1).max(axis=1)
+                    h_atr = float(h_tr.ewm(alpha=1/14, min_periods=14, adjust=False).mean().iloc[-1])
+
+                    # 보유 일수
+                    h_hold_days = (datetime.date.today() - h_entry_date).days
+
+                    # 3ATR 손절가
+                    h_stop_3atr = h_entry_price - 3 * h_atr
+
+                    is_mr = h_mode == "MR (평균회귀)"
+
+                    # ── 현황 표시 ──
+                    st.divider()
+                    st.markdown(f"#### {h_ticker} 보유 현황")
+
+                    hm1, hm2, hm3, hm4 = st.columns(4)
+                    with hm1:
+                        color = "normal" if h_pnl >= 0 else "inverse"
+                        st.metric("현재가", f"${h_curr:.2f}", f"{h_pnl:+.1f}%", delta_color=color)
+                    with hm2:
+                        st.metric("보유 일수", f"{h_hold_days}일")
+                    with hm3:
+                        st.metric("RSI(2)", f"{h_rsi2:.1f}")
+                    with hm4:
+                        st.metric("RSI(14)", f"{h_rsi14:.1f}")
+
+                    # ── 청산 조건 체크 ──
+                    st.divider()
+                    st.markdown("#### 🚦 청산 신호 판정")
+
+                    sell_signals = []
+
+                    if is_mr:
+                        # MR 청산: ①RSI(2)>70 ②10일 타임스탑 ③3ATR 재난손절
+                        tp_hit = h_rsi2 > 70
+                        time_hit = h_hold_days >= 10
+                        stop_hit = h_curr <= h_stop_3atr
+
+                        s1, s2, s3 = st.columns(3)
+                        with s1:
+                            if tp_hit:
+                                st.error(f"🔴 **①익절 신호**\n\nRSI(2) = {h_rsi2:.1f} > 70\n**매도 실행**")
+                                sell_signals.append("RSI(2)>70 익절")
+                            else:
+                                st.success(f"🟢 ①익절 대기\n\nRSI(2) = {h_rsi2:.1f}\n70 미만 → 홀드")
+                        with s2:
+                            if time_hit:
+                                st.error(f"🔴 **②타임스탑**\n\n보유 {h_hold_days}일 ≥ 10일\n**매도 실행**")
+                                sell_signals.append("10일 타임스탑")
+                            else:
+                                st.success(f"🟢 ②타임스탑 대기\n\n보유 {h_hold_days}일\n{10 - h_hold_days}일 남음")
+                        with s3:
+                            if stop_hit:
+                                st.error(f"🔴 **③재난손절**\n\n현가 ${h_curr:.2f} ≤ ${h_stop_3atr:.2f}\n**즉시 매도**")
+                                sell_signals.append("3ATR 재난손절")
+                            else:
+                                st.success(f"🟢 ③재난손절 안전\n\n현가 ${h_curr:.2f}\n손절선 ${h_stop_3atr:.2f}")
+                    else:
+                        # MOM 청산: ①+8% 익절 ②15일 타임스탑
+                        tp_hit = h_pnl >= 8.0
+                        time_hit = h_hold_days >= 15
+
+                        s1, s2 = st.columns(2)
+                        with s1:
+                            if tp_hit:
+                                st.error(f"🔴 **①익절 신호**\n\n수익률 {h_pnl:+.1f}% ≥ +8%\n**매도 실행**")
+                                sell_signals.append("+8% 익절")
+                            else:
+                                st.success(f"🟢 ①익절 대기\n\n수익률 {h_pnl:+.1f}%\n목표 +8% (${h_entry_price * 1.08:.2f})")
+                        with s2:
+                            if time_hit:
+                                st.error(f"🔴 **②타임스탑**\n\n보유 {h_hold_days}일 ≥ 15일\n**매도 실행**")
+                                sell_signals.append("15일 타임스탑")
+                            else:
+                                st.success(f"🟢 ②타임스탑 대기\n\n보유 {h_hold_days}일\n{15 - h_hold_days}일 남음")
+
+                    # ── 최종 판정 ──
+                    st.divider()
+                    if sell_signals:
+                        st.markdown(f"""
+    <div style="background:#3d1a1a;border-radius:16px;padding:20px;text-align:center;margin:8px 0">
+        <div style="font-size:3rem">🔴</div>
+        <div style="font-size:1.6rem;font-weight:bold;color:#FF5252">매도 — {' + '.join(sell_signals)}</div>
+        <div style="color:#aaa;margin-top:8px">{h_ticker} ${h_curr:.2f} | 수익률 {h_pnl:+.1f}% | 보유 {h_hold_days}일</div>
+    </div>
+    """, unsafe_allow_html=True)
+                    else:
+                        st.markdown(f"""
+    <div style="background:#1a4731;border-radius:16px;padding:20px;text-align:center;margin:8px 0">
+        <div style="font-size:3rem">🟢</div>
+        <div style="font-size:1.6rem;font-weight:bold;color:#00C853">홀드 — 청산 조건 없음</div>
+        <div style="color:#aaa;margin-top:8px">{h_ticker} ${h_curr:.2f} | 수익률 {h_pnl:+.1f}% | 보유 {h_hold_days}일</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+            except Exception as e:
+                st.error(f"❌ 오류: {e}")          
