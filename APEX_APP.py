@@ -540,12 +540,16 @@ _spy_g2 = _spy_d2.clip(lower=0).ewm(alpha=1/2, min_periods=2, adjust=False).mean
 _spy_l2 = (-_spy_d2.clip(upper=0)).ewm(alpha=1/2, min_periods=2, adjust=False).mean()
 _spy_rsi2_dr = float((100 - 100/(1 + _spy_g2/_spy_l2.replace(0, 1e-10))).iloc[-1])
 
-# 레짐 판단
-_spy_above_dr = spy_price is not None and spy_sma200 is not None and spy_price > spy_sma200
-_qqq_above_dr = qqq_price is not None and qqq_sma200 is not None and qqq_price > qqq_sma200
-if _spy_above_dr and _qqq_above_dr:
+# 레짐 판단 (안전마진 적용)
+_spy_margin_dr = ((spy_price - spy_sma200) / spy_sma200 * 100) if (spy_price and spy_sma200) else -99
+_qqq_margin_dr = ((qqq_price - qqq_sma200) / qqq_sma200 * 100) if (qqq_price and qqq_sma200) else -99
+
+# STRONG_BULL: SPY & QQQ 모두 SMA200 위 5% 이상
+# WEAK_BULL:   SPY & QQQ 모두 SMA200 위 3% 이상
+# BEAR:        그 외 (경계구간 포함)
+if _spy_margin_dr >= 5 and _qqq_margin_dr >= 5:
     _regime_dr = "STRONG_BULL"
-elif _spy_above_dr or _qqq_above_dr:
+elif _spy_margin_dr >= 3 and _qqq_margin_dr >= 3:
     _regime_dr = "WEAK_BULL"
 else:
     _regime_dr = "BEAR"
@@ -587,7 +591,8 @@ with tab_report:
     # 레짐 요약
     _regime_emoji = {"STRONG_BULL": "🟢", "WEAK_BULL": "🟡", "BEAR": "🔴"}
     rc1, rc2, rc3, rc4 = st.columns(4)
-    with rc1: st.metric("레짐", f"{_regime_emoji.get(_regime_dr, '⚪')} {_regime_dr}")
+    with rc1: st.metric("레짐", f"{_regime_emoji.get(_regime_dr, '⚪')} {_regime_dr}",
+                        f"SPY {_spy_margin_dr:+.1f}% / QQQ {_qqq_margin_dr:+.1f}% vs SMA200")
     with rc2: st.metric("SPY RSI(2)", f"{_spy_rsi2_dr:.1f}")
     with rc3: st.metric("MOM", "✅ 허용" if _mom_ok_dr else "🚫 금지")
     with rc4: st.metric("MR", "✅ 허용" if _mr_ok_dr else "🚫 금지")
