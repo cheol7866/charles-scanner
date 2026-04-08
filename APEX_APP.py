@@ -45,6 +45,12 @@ st.markdown("""
         background: #1E1E2E;
         border-radius: 12px;
         padding: 12px;
+        color: #FFFFFF;
+    }
+    [data-testid="stMetric"] label,
+    [data-testid="stMetric"] [data-testid="stMetricValue"],
+    [data-testid="stMetric"] [data-testid="stMetricDelta"] {
+        color: #FFFFFF !important;
     }
     .signal-box {
         border-radius: 16px;
@@ -54,12 +60,6 @@ st.markdown("""
     }
     .block-container { padding-top: 1rem; }
     .stSelectbox > div > div { font-size: 1rem; }
-    .sentiment-bar {
-        height: 24px;
-        border-radius: 8px;
-        margin: 6px 0;
-        transition: width 0.3s ease;
-    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -187,32 +187,6 @@ def run_screener(sector: str):
     except Exception as e:
         return str(e)
 
-@st.cache_data(ttl=900, show_spinner=False)
-def get_social_sentiment(ticker: str):
-    """
-    소셜미디어 감성지수 추정 (StockTwits 공개 API 사용)
-    bullish_count / (bullish_count + bearish_count) × 100
-    API 실패 시 None 반환 → UI에서 안내 표시
-    """
-    try:
-        url = f"https://api.stocktwits.com/api/2/streams/symbol/{ticker}.json"
-        resp = requests.get(url, timeout=5)
-        if resp.status_code != 200:
-            return None
-        data = resp.json()
-        messages = data.get("messages", [])
-        if not messages:
-            return None
-        bull = sum(1 for m in messages if m.get("entities", {}).get("sentiment", {}) and
-                   m["entities"]["sentiment"].get("basic") == "Bullish")
-        bear = sum(1 for m in messages if m.get("entities", {}).get("sentiment", {}) and
-                   m["entities"]["sentiment"].get("basic") == "Bearish")
-        total = bull + bear
-        if total == 0:
-            return None
-        return round(bull / total * 100, 1)
-    except Exception:
-        return None
 
 
 # ══════════════════════════════════════════════════════════════
@@ -266,12 +240,18 @@ def run_finviz_dr(mode, sectors_list):
                 "RSI (14)": "Not Overbought (<60)",
                 "Performance": "Quarter +10%",
                 "Average Volume": "Over 500K",
+                "Industry": "Stocks only (ex-Funds)",
+                "Relative Volume": "Over 1.5",
+                "Current Volume": "Over 500K",
+                "Price": "Over $10",
             }
         else:
             filters = {
                 "200-Day Simple Moving Average": "Price above SMA200",
                 "RSI (14)": "Oversold (40)",
                 "Average Volume": "Over 500K",
+                "Industry": "Stocks only (ex-Funds)",
+                "Price": "Over $10",
             }
         if sectors_list and len(sectors_list) == 1 and sectors_list[0] != "전체":
             filters["Sector"] = sectors_list[0]
@@ -308,7 +288,6 @@ def analyze_stock_dr(ticker, mode, spy_rsi2_val, mom_ok_val, vix_ok_val, account
         rvol = _calc_rvol(volume)
         consec = _consec_down(close)
         earn = get_earnings_info(ticker)
-        sentiment = get_social_sentiment(ticker)
 
         s200 = float(sma200.iloc[-1])
         s150 = float(sma150.iloc[-1]) if not pd.isna(sma150.iloc[-1]) else None
@@ -340,7 +319,6 @@ def analyze_stock_dr(ticker, mode, spy_rsi2_val, mom_ok_val, vix_ok_val, account
                 "BB 하단 터치": price <= bb_low_v * 1.005,
                 "RVOL < 1.2": rvol < 1.2,
                 "연속 하락 3일+": consec >= 3,
-                "감성 45%+": sentiment is not None and sentiment >= 45,
                 "VIX ≤ 25": vix_ok_val,
             }
         else:
@@ -386,7 +364,6 @@ def analyze_stock_dr(ticker, mode, spy_rsi2_val, mom_ok_val, vix_ok_val, account
             "sepa": sepa, "sma200_rising": sma200_rising,
             "from_high": round(from_high, 1), "from_low": round(from_low, 1),
             "earn_label": earn["label"], "earn_blocked": earn["within_3d"],
-            "sentiment": sentiment,
             "required": required, "req_pass": req_pass, "req_total": len(required),
             "preferred": preferred, "pref_pass": pref_pass, "pref_total": len(preferred),
             "pref_pct": round(pref_pct * 100),
@@ -669,7 +646,7 @@ with tab_report:
                         with m1: st.metric("RSI(2)", f"{r['rsi2']}", "≤15 ✓" if r['rsi2']<=15 else ">15 ✗")
                         with m2: st.metric("RVOL", f"{r['rvol']}x")
                         with m3: st.metric("ATR", f"${r['atr']}")
-                        with m4: st.metric("감성", f"{r['sentiment'] or 'N/A'}%")
+                        with m4: st.metric("연속↓", f"{r['consec']}일")
 
                         ch1, ch2 = st.columns(2)
                         with ch1:
@@ -1350,68 +1327,6 @@ with tab_manual:
                                     else:
                                         st.warning(f"🟡 BB 중단 아래\n현가 ${curr:.2f}\n추세 약화 주의")
 
-                        # ── 소셜미디어 감성지수 ──
-                        st.divider()
-                        st.markdown(f"#### 💬 소셜미디어 감성지수 — {selected}")
-                        st.caption("StockTwits 최근 메시지 기반 | 새로고침마다 업데이트")
-
-                        with st.spinner("감성 분석 중..."):
-                            sentiment_pct = get_social_sentiment(selected)
-
-                        if sentiment_pct is not None:
-                            # 색상 결정
-                            if sentiment_pct >= 65:
-                                bar_color = "#00C853"
-                                label = "🟢 긍정 신호"
-                                desc  = "투자자 심리 강세 — 모멘텀 뒷받침"
-                            elif sentiment_pct >= 45:
-                                bar_color = "#FFD700"
-                                label = "🟡 중립"
-                                desc  = "방향성 불분명 — 추가 확인 필요"
-                            else:
-                                bar_color = "#FF5252"
-                                label = "🔴 부정 신호"
-                                desc  = "투자자 심리 약세 — 진입 주의"
-
-                            neg_pct = 100 - sentiment_pct
-
-                            # 게이지 바
-                            st.markdown(f"""
-                            <div style="margin:8px 0">
-                                <div style="display:flex;justify-content:space-between;font-size:0.85rem;color:#aaa">
-                                    <span>부정 {neg_pct:.0f}%</span>
-                                    <span>긍정 {sentiment_pct:.0f}%</span>
-                                </div>
-                                <div style="background:#333;border-radius:8px;height:22px;overflow:hidden">
-                                    <div style="width:{sentiment_pct}%;background:{bar_color};
-                                                height:100%;border-radius:8px;
-                                                transition:width 0.4s ease"></div>
-                                </div>
-                                <div style="text-align:center;font-size:1.1rem;font-weight:bold;
-                                            margin-top:6px;color:{bar_color}">{label}</div>
-                                <div style="text-align:center;color:#aaa;font-size:0.85rem">{desc}</div>
-                            </div>
-                            """, unsafe_allow_html=True)
-
-                            # 판단 기준 안내
-                            with st.expander("감성지수 판단 기준"):
-                                st.markdown("""
-                                | 수치 | 의미 |
-                                |------|------|
-                                | **65% 이상** | 🟢 긍정 — MOM 진입 뒷받침 |
-                                | **45~64%** | 🟡 중립 — 단독 판단 금물 |
-                                | **44% 이하** | 🔴 부정 — 진입 재검토 |
-
-                                ※ 수치가 높을수록 긍정(Bullish) 비율 높음  
-                                ※ 단독 지표로 사용 금지 — SMA/RSI/RVOL과 종합 판단
-                                """)
-                        else:
-                            st.info(
-                                "⚪ 감성 데이터 없음\n\n"
-                                "StockTwits에 해당 종목 최근 메시지가 부족하거나 API 일시 제한 상태입니다.\n"
-                                "1~2분 후 새로고침 해보세요."
-                            )
-
                         # ── 차트 ──
                         st.divider()
                         if PLOTLY_OK:
@@ -1657,209 +1572,6 @@ with tab_manual:
     st.divider()
 
 
-    # ══════════════════════════════════════════════════════════
-    # ⑦ 인트라데이 진입 타이밍 가이드
-    # ORB / VWAP Reclaim / Episodic Pivot
-    # ══════════════════════════════════════════════════════════
-    st.markdown("### ⏱️ 인트라데이 진입 타이밍 가이드")
-    st.caption(
-        "일봉 스캔 완료 후 → 장 중 실시간 진입 타이밍 확인용 | "
-        "TradingView 1분/5분봉 병행 사용 권장"
-    )
-    st.info(
-        "**사용 순서**: 위 종목 스캐너로 후보 선정 → "
-        "아래 3개 패턴 중 해당 패턴 탭 선택 → "
-        "체크리스트 수동 확인 → 진입 여부 최종 판단"
-    )
-
-    tab_orb, tab_vwap, tab_ep = st.tabs([
-        "📐 ORB (Opening Range Breakout)",
-        "〰️ VWAP Reclaim",
-        "🚀 Episodic Pivot (갭+뉴스)",
-    ])
-
-    # ──────────────────────────────────────────
-    # TAB 1: ORB
-    # ──────────────────────────────────────────
-    with tab_orb:
-        st.markdown("#### 📐 ORB — Opening Range Breakout")
-        st.caption("갭+뉴스 종목의 장 초반 첫 5분/15분 고점 돌파 전략")
-
-        st.markdown("**📌 진입 조건 체크리스트**")
-        orb_checks = [
-            ("프리마켓 거래량 전일 대비 3배 이상?",           "거래량 없는 갭은 가짜 신호"),
-            ("뉴스/촉매 확인? (실적·FDA·계약·업그레이드)",    "촉매 없는 갭은 신뢰도 낮음"),
-            ("갭 크기 3~15% 사이?",                           "갭 >15%는 Episodic Pivot 패턴으로 처리"),
-            ("SPY/QQQ 장 초반 방향 확인 (하락 중 아님)?",     "시장 역풍 시 ORB 성공률 급감"),
-            ("오프닝 레인지 확정 (첫 5분 또는 15분)?",        "고점·저점 가격 메모 필수"),
-            ("오프닝 레인지 상단 돌파 + 거래량 급증?",        "거래량 동반 없는 돌파는 함정"),
-            ("돌파 캔들이 양봉 + 꼬리 짧음?",                 "윗꼬리 긴 캔들은 매도 압력 신호"),
-            ("VWAP 위에서 돌파 발생?",                        "VWAP 아래 돌파는 신뢰도 낮음"),
-        ]
-        for item, tip in orb_checks:
-            col_c, col_t = st.columns([3, 2])
-            with col_c:
-                st.checkbox(item, key=f"orb_{item[:20]}")
-            with col_t:
-                st.caption(f"💡 {tip}")
-
-        st.divider()
-        st.markdown("**🎯 진입 / 손절 / 목표가**")
-        oc1, oc2, oc3 = st.columns(3)
-        with oc1:
-            st.error("🛑 **손절**\n\nORB 저점 (오프닝 레인지 최저점)\n\n또는 VWAP 아래 종가 1분봉")
-        with oc2:
-            st.success("🎯 **목표1**\n\nR:R = 1:2\n\n(손절폭 × 2 위)")
-        with oc3:
-            st.success("🎯 **목표2**\n\n전일 고점 또는\nプレマーケット 고점")
-
-        st.markdown("**⚡ 진입 타이밍 3단계**")
-        st.markdown("""
-    1. **장 시작 후 첫 5분 대기** — 오프닝 레인지(OR) 고점·저점 확정
-    2. **OR 상단 돌파 순간** — 즉시 시장가 또는 돌파가 +0.1% 지정가
-    3. **1분봉 저점 이탈 시** → 즉시 손절, 재진입 금지 (당일 해당 종목 종료)
-    """)
-
-        with st.expander("📖 ORB 성공률을 높이는 비공개 필터 (공개 자료 종합)"):
-            st.markdown("""
-    | 필터 | 기준 | 이유 |
-    |---|---|---|
-    | Float | 2천만 주 이하 선호 | 유동주식 적을수록 변동폭 크고 추세 지속 |
-    | 섹터 강도 | 섹터 ETF 당일 상승 중 | 섹터 역풍 시 ORB 실패율 높음 |
-    | VIX | 20 이하 | 고변동성 장세에서 ORB는 노이즈 많음 |
-    | 갭 방향 | 갭상 종목만 | 갭하 ORB는 반발 매도 강해 위험 |
-    | 시간대 | 장 시작 후 30분 이내 | 이후 ORB는 레인지 왜곡 가능성 |
-            """)
-
-    # ──────────────────────────────────────────
-    # TAB 2: VWAP Reclaim
-    # ──────────────────────────────────────────
-    with tab_vwap:
-        st.markdown("#### 〰️ VWAP Reclaim — VWAP 회복·지지 패턴")
-        st.caption("기관·단타 모두가 보는 핵심 기준선 기반 추세 진입")
-
-        st.markdown("**📌 두 가지 진입 방식**")
-        vt1, vt2 = st.columns(2)
-        with vt1:
-            st.info("**방식 A: VWAP 상향 돌파형**\n\nVWAP 아래에 있던 종목이\nVWAP을 강하게 뚫고 올라올 때")
-        with vt2:
-            st.info("**방식 B: VWAP 지지 확인형**\n\n이미 VWAP 위에 있는 종목이\nVWAP까지 눌렸다가 재상승할 때")
-
-        st.markdown("**📌 진입 조건 체크리스트**")
-        vwap_checks = [
-            ("VWAP 위치 확인 완료? (TradingView 1분봉)",      "VWAP은 장 중 실시간 계산 — 전일값 사용 금지"),
-            ("VWAP 돌파 캔들 거래량 직전 평균 2배 이상?",     "거래량 없는 VWAP 돌파는 가짜 신호 확률 높음"),
-            ("돌파 후 1~3분 VWAP 위 유지 확인?",              "즉시 되돌림 시 미결 진입 — 방식 A 핵심 확인"),
-            ("VWAP 위 유지 중 직전 1분봉 고점 돌파?",         "3단계 확인: 돌파 → 유지 → 재돌파"),
-            ("SPY 같은 시간대 하락 중 아님?",                 "SPY 역풍 시 VWAP reclaim 실패율 급증"),
-            ("전일 종가 위에서 VWAP 돌파 발생?",              "전일 종가 아래 VWAP은 하락 추세 신호"),
-        ]
-        for item, tip in vwap_checks:
-            col_c, col_t = st.columns([3, 2])
-            with col_c:
-                st.checkbox(item, key=f"vwap_{item[:20]}")
-            with col_t:
-                st.caption(f"💡 {tip}")
-
-        st.divider()
-        st.markdown("**🎯 진입 / 손절 / 목표가**")
-        vc1, vc2, vc3 = st.columns(3)
-        with vc1:
-            st.error("🛑 **손절**\n\nVWAP 아래 1분봉 종가\n\n또는 진입 캔들 저점")
-        with vc2:
-            st.success("🎯 **목표1**\n\n당일 전고점\n\n또는 프리마켓 고점")
-        with vc3:
-            st.success("🎯 **목표2**\n\nR:R 1:2 이상\n\n(손절폭 × 2 위)")
-
-        st.markdown("**⚡ Warrior Trading 방식 3단계 진입**")
-        st.markdown("""
-    1. **VWAP 상향 돌파** — 공격적 진입 (리스크 큼)
-    2. **돌파 후 1분봉 미세 눌림** → 눌림 저점 지지 확인 후 진입 (기본)
-    3. **5분봉 불플래그 상단 돌파** → 가장 안전한 진입 (모멘텀 확인 후)
-    """)
-
-        with st.expander("📖 VWAP 패턴 심화 — Anchored VWAP (AVWAP)"):
-            st.markdown("""
-    **Brian Shannon의 AVWAP**: 특정 이벤트 날짜에 VWAP 앵커를 걸어 계산
-
-    | 앵커 기준 | 의미 |
-    |---|---|
-    | 실적 발표일 | 실적 이후 평균 매수가 |
-    | 52주 저점일 | 바닥 이후 매집 평균가 |
-    | 갭 발생일 | 갭 이후 시장 참여자 평균가 |
-    | 연초(1월 1일) | 연중 매수자 평균가 |
-
-    **AVWAP 진입 시나리오**:  
-    뉴스 갭 → 하루이틀 눌림 → 이벤트 앵커 AVWAP 근처에서 매수세 재유입 → 진입  
-    (일반 VWAP과 달리 다음날에도 유효한 기준선)
-            """)
-
-    # ──────────────────────────────────────────
-    # TAB 3: Episodic Pivot
-    # ──────────────────────────────────────────
-    with tab_ep:
-        st.markdown("#### 🚀 Episodic Pivot — 갭+뉴스 펀더멘털 재평가")
-        st.caption("실적 서프라이즈·가이던스 상향·강한 뉴스로 갭이 크게 뜬 날의 진입 전략")
-        st.warning("⚠️ ORB보다 갭이 크고 (15%+) 펀더멘털 재평가가 동반되는 경우 사용")
-
-        st.markdown("**📌 진입 조건 체크리스트**")
-        ep_checks = [
-            ("갭 크기 10% 이상?",                              "갭 <10%는 ORB 패턴으로 처리"),
-            ("촉매 종류 확인? (실적·FDA·인수합병·계약)",       "PR·언론 추측성 뉴스는 신뢰도 낮음"),
-            ("프리마켓 거래량 평소 5배 이상?",                 "기관 참여 증거 — 필수 조건"),
-            ("오프닝 레인지(첫 5분) 고점 돌파?",              "갭 뜬 날 첫 5분 고점 = 핵심 저항선"),
-            ("장 시작 후 첫 5분 약해지지 않음?",              "'뜬 뒤 바로 무너짐' = 실패 패턴"),
-            ("섹터 전체 강세 동반?",                           "섹터 약세 시 개별주 Pivot도 흘러내림"),
-            ("갭 발생 전 압축(눌림) 패턴 있었음?",            "Qullamaggie: 기존 추세 + Pivot이 최강"),
-            ("시초가 캔들 저점이 손절로 허용 가능한 수준?",   "초기 캔들 저점 = 손절선 — 너무 넓으면 패스"),
-        ]
-        for item, tip in ep_checks:
-            col_c, col_t = st.columns([3, 2])
-            with col_c:
-                st.checkbox(item, key=f"ep_{item[:20]}")
-            with col_t:
-                st.caption(f"💡 {tip}")
-
-        st.divider()
-        st.markdown("**🎯 진입 / 손절 / 목표가**")
-        ec1, ec2, ec3 = st.columns(3)
-        with ec1:
-            st.error("🛑 **손절**\n\n시초 캔들 저점\n\n또는 당일 저점\n\n(갭 메우기 시작 = 즉시 청산)")
-        with ec2:
-            st.success("🎯 **목표1**\n\n오프닝 레인지 상단\n\n돌파 후 R:R 1:2")
-        with ec3:
-            st.success("🎯 **목표2**\n\n10일선·20일선 종가\n\n이탈까지 보유\n\n(Qullamaggie 방식)")
-
-        st.markdown("**⚡ Episodic Pivot 진입 3단계**")
-        st.markdown("""
-    1. **장 시작 전**: 뉴스·갭 크기·프리마켓 거래량 확인 → 후보 선정
-    2. **장 시작 후 첫 5분 관망**: 시초가 캔들 방향 확인 (위로 치는가 vs 흘러내리는가)
-    3. **첫 5분 고점 돌파 + 거래량 급증 시** → 시장가 진입 / 손절: 시초 캔들 저점
-    """)
-
-        st.markdown("**🔴 Episodic Pivot 실패 패턴 — 즉시 청산**")
-        st.error("""
-    • 갭 뜬 후 첫 5분 캔들이 음봉 (매도 압력이 더 강함)  
-    • VWAP 아래로 재진입 (기관 평단 아래 = 세력 이탈)  
-    • 오프닝 레인지 저점 이탈 (구조 붕괴)  
-    • 갭 50% 이상 메워짐 (펀더멘털 재평가 실패 신호)
-    """)
-
-        with st.expander("📖 Episodic Pivot vs ORB 비교"):
-            st.markdown("""
-    | 구분 | ORB | Episodic Pivot |
-    |---|---|---|
-    | 갭 크기 | 3~15% | 10%+ (대형 갭) |
-    | 촉매 강도 | 보통 | 강함 (실적·FDA·M&A) |
-    | 프리마켓 거래량 | 3배 이상 | 5배 이상 |
-    | 보유 기간 | 당일 | 당일~수일 (스윙 가능) |
-    | 손절 기준 | ORB 저점 | 시초 캔들 저점 |
-    | 목표가 | R:R 1:2 | 10일/20일선 트레일링 |
-    | 핵심 원리 | 기술적 돌파 | 펀더멘털 재평가 |
-            """)
-
-    st.divider()
-
 
     # ══════════════════════════════════════════════════════════
     # ⑥ 핵심 체크리스트
@@ -1875,10 +1587,8 @@ with tab_manual:
     □ 종목 SMA50 위?  
     □ RSI(14) 60 미만? (과매수 아님)  
     □ RVOL 전략 기준 충족? (MOM > 1.2 / MR < 1.2)  
-    □ 소셜 감성지수 45% 이상?  
     □ **ATR 포지션 사이징 완료?** (계좌 × 리스크% ÷ ATR → 주수 확정)  
     □ 손절가 설정 완료? (SMA20 아래 종가 마감 시 청산)  
-    □ **인트라데이 진입 패턴 확인?** (위 ⑦ 가이드: ORB / VWAP / EP 중 해당 패턴 체크)  
     """)
 
     st.markdown("**🟠 MR 전용 추가 체크 (APEX 2.0 핵심)**")
