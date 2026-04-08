@@ -169,16 +169,27 @@ def get_earnings_info(ticker: str):
 
 
 @st.cache_data(ttl=600, show_spinner=False)
-def run_screener(sector: str):
+def run_screener(sector: str, mode: str = "MOM"):
     try:
         from finvizfinance.screener.overview import Overview
-        filters = {
-            "200-Day Simple Moving Average": "Price above SMA200",
-            "50-Day Simple Moving Average":  "Price above SMA50",
-            "RSI (14)":                      "Not Overbought (<60)",
-            "Performance":                   "Quarter +10%",
-            "Average Volume":                "Over 500K",
-        }
+        if mode == "MOM":
+            filters = {
+                "200-Day Simple Moving Average": "Price above SMA200",
+                "50-Day Simple Moving Average":  "Price above SMA50",
+                "RSI (14)":                      "Not Overbought (<60)",
+                "Performance":                   "Quarter +10%",
+                "Average Volume":                "Over 500K",
+                "Industry":                      "Stocks only (ex-Funds)",
+                "Price":                         "Over $10",
+            }
+        else:
+            filters = {
+                "200-Day Simple Moving Average": "Price above SMA200",
+                "RSI (14)":                      "Oversold (40)",
+                "Average Volume":                "Over 500K",
+                "Industry":                      "Stocks only (ex-Funds)",
+                "Price":                         "Over $10",
+            }
         if sector != "전체":
             filters["Sector"] = sector
         fov = Overview()
@@ -798,7 +809,7 @@ with tab_manual:
     # ⑤ 종목 스캐너
     # ══════════════════════════════════════════════════════════
     st.markdown("## 🔍 종목 스캔")
-    st.caption("필터: SMA200위 + SMA50위 + RSI<60 + 3개월+10% + 거래량500K+")
+    st.caption("MOM: SMA200위+SMA50위+RSI<60+분기+10%+거래량500K+ | MR: SMA200위+RSI(14)<40+거래량500K+")
 
     # 전략 선택 — RVOL 기준이 MOM/MR에 따라 달라짐
     strategy_mode = st.radio(
@@ -842,7 +853,7 @@ with tab_manual:
 
     if run_scan:
         with st.spinner("Finviz 스크리닝 중..."):
-            result = run_screener(sector)
+            result = run_screener(sector, "MOM" if is_mom else "MR")
         st.session_state.scan_result = result
         st.session_state.scan_sector = sector
 
@@ -1649,4 +1660,4 @@ with tab_manual:
     | ①익절 | RSI(2)>70 매도 | **+8% 도달 시 매도** |
     | ②타임스탑 | 최대 **10일** | 최대 **15일** |
     | ③재난손절 | 진입가−3ATR | **없음** (성과 저하) |
-    """)
+    """)    
