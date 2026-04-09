@@ -1,9 +1,9 @@
 """
-APEX Daily TOP2 — 매일 04:40 KST 자동 전송
-────────────────────────────────────────
-당일 상승률 상위 10개 중 내일 상승 확률 높은 2종목 선별
-실행: python apex_daily_top2.py
-자동화: 작업 스케줄러에서 매일 04:40 KST 실행
+APEX Telegram Daily Report
+──────────────────────────
+매일 자동 스캔 후 텔레그램으로 결과 전송.
+실행: python apex_telegram.py
+설치: pip install yfinance pandas finvizfinance requests
 """
 
 import datetime
@@ -12,44 +12,20 @@ import requests
 import pandas as pd
 import yfinance as yf
 
-# ══════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════
 # 설정
-# ══════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════
 TELEGRAM_TOKEN   = "8547833658:AAHEWRtZ8X0pjGD1p5JwPopQFBOrO6XBJo8"
 TELEGRAM_CHAT_ID = "8531086237"
 
-ACCOUNT_SIZE = 5000   # 계좌 크기 (USD) — 본인에 맞게 수정
+ACCOUNT_SIZE = 5000   # 계좌 크기 (USD)
 RISK_PCT     = 1.0    # 1회 리스크 %
 
-# S&P500 종목 리스트 (안정적인 대형주 위주 200개)
-SP500_TICKERS = [
-    "AAPL","MSFT","NVDA","AMZN","META","GOOGL","TSLA","BRK-B","JPM","LLY",
-    "AVGO","V","MA","UNH","XOM","COST","HD","PG","JNJ","ABBV",
-    "BAC","MRK","CRM","CVX","NFLX","AMD","ACN","TMO","LIN","ORCL",
-    "ABT","DHR","MCD","TXN","NEE","PM","QCOM","AMGN","INTU","ISRG",
-    "IBM","GS","SPGI","CAT","HON","AMAT","NOW","AXP","BKNG","RTX",
-    "BLK","VRTX","PLD","SYK","PANW","MMC","GILD","MDT","SCHW","ADI",
-    "CI","DE","REGN","SBUX","ZTS","PGR","LRCX","TJX","CME","ETN",
-    "BSX","EOG","MO","ELV","ADP","NOC","SO","DUK","KLAC","APH",
-    "MCO","ITW","SHW","ICE","WM","FI","HCA","MSI","CEG","GEV",
-    "CDNS","SNPS","MCHP","FICO","IDXX","ROP","CTAS","MNST","BIIB","DXCM",
-    "AXON","CRWD","FTNT","ANSS","VRSK","CPRT","EW","ENPH","PODD","ALGN",
-    "MSCI","EPAM","PAYC","POOL","TDG","TRMB","BR","CBOE","DT","HOOD",
-    "HLT","MAR","UBER","LYFT","ABNB","DASH","ZM","DOCU","TWLO","OKTA",
-    "SNOW","MDB","NET","DDOG","ZS","GTLB","U","RBLX","COIN","MARA",
-    "WMT","TGT","LOW","F","GM","RIVN","LCID","NKE","LULU","TPR",
-    "MU","WDC","STX","NTAP","HPE","DELL","SMCI","PLTR","BBAI","AI",
-    "GE","BA","LMT","GD","HII","L3H","TDY","HWM","SPR","KTOS",
-    "XOM","CVX","COP","SLB","HAL","BKR","MPC","VLO","PSX","DVN",
-    "PFE","MRNA","BNTX","BMY","AZN","GSK","NVO","LLY","RGEN","EXAS",
-    "GS","MS","WFC","C","USB","PNC","TFC","COF","AIG","MET",
-]
 
-
-# ══════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════
 # 텔레그램 전송
-# ══════════════════════════════════════════════════
-def send_telegram(text: str) -> bool:
+# ══════════════════════════════════════════════════════
+def send_telegram(text):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     try:
         r = requests.post(url, json={
@@ -63,256 +39,362 @@ def send_telegram(text: str) -> bool:
         return False
 
 
-# ══════════════════════════════════════════════════
-# 당일 상승률 상위 10개 추출
-# ══════════════════════════════════════════════════
-def get_top10_gainers(tickers: list) -> list:
-    """당일 상승률 기준 상위 10개 종목 반환"""
-    print(f"  {len(tickers)}개 종목 당일 등락률 수집 중...")
-    results = []
+# ══════════════════════════════════════════════════════
+# 지표 계산
+# ══════════════════════════════════════════════════════
+def _calc_rsi(series, period):
+    delta    = series.diff()
+    gain     = delta.where(delta > 0, 0.0)
+    loss     = -delta.where(delta < 0, 0.0)
+    avg_gain = gain.ewm(alpha=1/period, min_periods=period, adjust=False).mean()
+    avg_loss = loss.ewm(alpha=1/period, min_periods=period, adjust=False).mean()
+    rs       = avg_gain / avg_loss.replace(0, 1e-10)
+    return 100 - (100 / (1 + rs))
 
-    # yfinance 배치 다운로드 (빠름)
+def _calc_sma(series, period):
+    return series.rolling(window=period).mean()
+
+def _calc_bollinger(series, period=20, std_mult=2):
+    sma = _calc_sma(series, period)
+    std = series.rolling(window=period).std()
+    return sma, sma + std_mult * std, sma - std_mult * std
+
+def _calc_atr(high, low, close, period=14):
+    tr = pd.concat([
+        high - low,
+        (high - close.shift(1)).abs(),
+        (low  - close.shift(1)).abs()
+    ], axis=1).max(axis=1)
+    return tr.ewm(alpha=1/period, min_periods=period, adjust=False).mean()
+
+def _calc_rvol(volume, period=20):
+    avg = volume.rolling(window=period).mean()
+    return float(volume.iloc[-1] / avg.iloc[-1]) if avg.iloc[-1] > 0 else 0
+
+def _consec_down(close):
+    count = 0
+    for i in range(len(close) - 1, 0, -1):
+        if close.iloc[i] < close.iloc[i - 1]:
+            count += 1
+        else:
+            break
+    return count
+
+def _check_eps_growth(ticker, min_growth_pct=25.0):
+    """[참고용] 직전 분기 EPS 전년 동기 대비 성장률 확인"""
     try:
-        raw = yf.download(
-            tickers,
-            period="2d",
-            interval="1d",
-            progress=False,
-            group_by="ticker"
-        )
+        qe = yf.Ticker(ticker).quarterly_earnings
+        if qe is None or qe.empty or len(qe) < 5:
+            return False
+        qe           = qe.sort_index(ascending=False)
+        latest_eps   = float(qe["Earnings"].iloc[0])
+        year_ago_eps = float(qe["Earnings"].iloc[4])
+        if year_ago_eps <= 0:
+            return False
+        growth = (latest_eps - year_ago_eps) / abs(year_ago_eps) * 100
+        return growth >= min_growth_pct
+    except Exception:
+        return False
+
+def _mr_rank_score(r):
+    score = 0.0
+    score += max(0, (15 - r.get("rsi2", 15)) / 15 * 40)
+    score += 20 if r.get("bb_touch", False) else 0
+    score += min(r.get("consec", 0) / 5, 1.0) * 20
+    rvol   = r.get("rvol", 1.2)
+    score += max(0, (1.2 - rvol) / 1.2 * 10)
+    score += {"A": 10, "B+": 5, "B-": 0, "FAIL": -99}.get(r.get("score", "FAIL"), 0)
+    return score
+
+def _mom_rank_score(r):
+    score = 0.0
+    score += min(r.get("perf_3m", 0) / 30, 1.0) * 30
+    score += min((r.get("rvol", 1.0) - 1.0) / 1.0, 1.0) * 20
+    score += 20 if r.get("sepa", False) else 0
+    score += min(r.get("from_low", 0) / 100, 1.0) * 15
+    score += {"A": 15, "B+": 7, "B-": 0, "FAIL": -99}.get(r.get("score", "FAIL"), 0)
+    return score
+
+
+# ══════════════════════════════════════════════════════
+# 시장 신호 수집
+# ══════════════════════════════════════════════════════
+def get_index_data(ticker):
+    try:
+        hist   = yf.Ticker(ticker).history(period="300d", interval="1d")
+        if hist.empty or len(hist) < 200:
+            return None, None, None
+        price  = float(hist["Close"].iloc[-1])
+        sma200 = float(hist["Close"].rolling(200).mean().iloc[-1])
+        chg    = float(hist["Close"].pct_change().iloc[-1] * 100)
+        return price, sma200, chg
+    except Exception:
+        return None, None, None
+
+def get_vix():
+    try:
+        hist = yf.Ticker("^VIX").history(period="5d", interval="1d")
+        return float(hist["Close"].iloc[-1]) if not hist.empty else None
+    except Exception:
+        return None
+
+def get_spy_rsi2():
+    try:
+        hist = yf.Ticker("SPY").history(period="30d", interval="1d")
+        rsi  = _calc_rsi(hist["Close"], 2)
+        return float(rsi.iloc[-1])
+    except Exception:
+        return None
+
+def get_earnings_within_3d(ticker):
+    today = datetime.date.today()
+    try:
+        tk  = yf.Ticker(ticker)
+        cal = tk.calendar
+        earn_date = None
+        if isinstance(cal, dict):
+            raw = cal.get("Earnings Date")
+            if raw:
+                earn_date = pd.Timestamp(
+                    raw[0] if isinstance(raw, (list, tuple)) else raw
+                ).date()
+        elif isinstance(cal, pd.DataFrame) and not cal.empty:
+            if "Earnings Date" in cal.index:
+                earn_date = pd.Timestamp(cal.loc["Earnings Date"].iloc[0]).date()
+        if earn_date:
+            days = (earn_date - today).days
+            return -1 <= days <= 3
+    except Exception:
+        pass
+    return False
+
+
+# ══════════════════════════════════════════════════════
+# 레짐 판단
+# ══════════════════════════════════════════════════════
+def get_regime(spy_price, spy_sma200, qqq_price, qqq_sma200):
+    if None in (spy_price, spy_sma200, qqq_price, qqq_sma200):
+        return "UNKNOWN"
+    spy_margin = (spy_price - spy_sma200) / spy_sma200 * 100
+    qqq_margin = (qqq_price - qqq_sma200) / qqq_sma200 * 100
+    if spy_margin >= 5 and qqq_margin >= 5:
+        return "STRONG_BULL"
+    elif spy_margin >= 3 and qqq_margin >= 3:
+        return "WEAK_BULL"
+    else:
+        return "BEAR"
+
+
+# ══════════════════════════════════════════════════════
+# Finviz 스크리닝
+# ══════════════════════════════════════════════════════
+def run_finviz(mode):
+    try:
+        from finvizfinance.screener.overview import Overview
+        fov = Overview()
+        if mode == "MOM":
+            filters = {
+                "200-Day Simple Moving Average": "Price above SMA200",
+                "50-Day Simple Moving Average":  "Price above SMA50",
+                "RSI (14)":                      "Not Overbought (<60)",
+                "Performance":                   "Quarter +10%",
+                "Average Volume":                "Over 500K",
+                "Industry":                      "Stocks only (ex-Funds)",
+                "Relative Volume":               "Over 1.5",
+                "Price":                         "Over $10",
+            }
+        else:  # MR
+            filters = {
+                "200-Day Simple Moving Average": "Price above SMA200",
+                "RSI (14)":                      "Oversold (40)",
+                "Average Volume":                "Over 500K",
+                "Market Cap.":                   "+Mid (over $2bln)",
+                "EPS growthqtr over qtr":        "Positive (>0%)",
+                "Industry":                      "Stocks only (ex-Funds)",
+                "Price":                         "Over $10",
+            }
+        fov.set_filter(filters_dict=filters)
+        df = fov.screener_view()
+        if df is None or df.empty:
+            return []
+        return df["Ticker"].tolist()
     except Exception as e:
-        print(f"  배치 다운로드 실패: {e}")
+        print(f"Finviz 오류: {e}")
         return []
 
-    for ticker in tickers:
-        try:
-            if len(tickers) == 1:
-                close = raw["Close"]
-            else:
-                close = raw[ticker]["Close"]
 
-            if close is None or len(close) < 2:
-                continue
-            close = close.dropna()
-            if len(close) < 2:
-                continue
-
-            chg = float((close.iloc[-1] - close.iloc[-2]) / close.iloc[-2] * 100)
-            price = float(close.iloc[-1])
-
-            if chg > 0:   # 상승 종목만
-                results.append({
-                    "ticker": ticker,
-                    "price":  round(price, 2),
-                    "chg":    round(chg, 2),
-                })
-        except Exception:
-            continue
-
-    # 상승률 내림차순 정렬 → 상위 10개
-    results.sort(key=lambda x: x["chg"], reverse=True)
-    top10 = results[:10]
-    print(f"  상위 10개: {[r['ticker'] for r in top10]}")
-    return top10
-
-
-# ══════════════════════════════════════════════════
-# 종목 상세 분석
-# ══════════════════════════════════════════════════
-def analyze_for_tomorrow(ticker: str, price: float, chg: float) -> dict | None:
-    """내일 상승 확률 평가"""
+# ══════════════════════════════════════════════════════
+# 종목 분석
+# ══════════════════════════════════════════════════════
+def analyze_stock(ticker, mode, spy_rsi2, mom_ok, vix_ok):
     try:
         df = yf.download(ticker, period="1y", progress=False)
-        if df.empty or len(df) < 60:
+        if df.empty or len(df) < 200:
             return None
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.get_level_values(0)
 
-        close  = df["Close"]
-        high   = df["High"]
-        low    = df["Low"]
-        volume = df["Volume"]
+        close, high, lo, volume = df["Close"], df["High"], df["Low"], df["Volume"]
+        price = float(close.iloc[-1])
 
-        # 지표 계산
-        sma200 = float(close.rolling(200).mean().iloc[-1])
-        sma50  = float(close.rolling(50).mean().iloc[-1])
-        sma20  = float(close.rolling(20).mean().iloc[-1])
+        sma200  = _calc_sma(close, 200)
+        sma150  = _calc_sma(close, 150)
+        sma50   = _calc_sma(close, 50)
+        rsi2    = _calc_rsi(close, 2)
+        rsi14   = _calc_rsi(close, 14)
+        _, _, bb_lower = _calc_bollinger(close)
+        atr     = _calc_atr(high, lo, close)
+        rvol    = _calc_rvol(volume)
+        consec  = _consec_down(close)
 
-        # RSI(14)
-        d14 = close.diff()
-        g14 = d14.clip(lower=0).ewm(alpha=1/14, min_periods=14, adjust=False).mean()
-        l14 = (-d14.clip(upper=0)).ewm(alpha=1/14, min_periods=14, adjust=False).mean()
-        rsi14 = float((100 - 100/(1 + g14/l14.replace(0, 1e-10))).iloc[-1])
+        s200     = float(sma200.iloc[-1])
+        s150     = float(sma150.iloc[-1]) if not pd.isna(sma150.iloc[-1]) else None
+        s50      = float(sma50.iloc[-1])
+        rsi2_v   = float(rsi2.iloc[-1])
+        rsi14_v  = float(rsi14.iloc[-1])
+        bb_low_v = float(bb_lower.iloc[-1])
+        atr_v    = float(atr.iloc[-1])
+        bb_touch = price <= bb_low_v * 1.005   # bb_touch 키 추가
 
-        # RSI(2)
-        d2 = close.diff()
-        g2 = d2.clip(lower=0).ewm(alpha=1/2, min_periods=2, adjust=False).mean()
-        l2 = (-d2.clip(upper=0)).ewm(alpha=1/2, min_periods=2, adjust=False).mean()
-        rsi2 = float((100 - 100/(1 + g2/l2.replace(0, 1e-10))).iloc[-1])
+        sepa          = s150 is not None and s50 > s150 > s200
+        sma200_rising = len(sma200) >= 21 and float(sma200.iloc[-1]) > float(sma200.iloc[-21])
 
-        # RVOL
-        avg_vol = float(volume.rolling(20).mean().iloc[-1])
-        rvol    = float(volume.iloc[-1] / avg_vol) if avg_vol > 0 else 0
-
-        # ATR(14)
-        tr  = pd.concat([
-            high - low,
-            (high - close.shift(1)).abs(),
-            (low  - close.shift(1)).abs()
-        ], axis=1).max(axis=1)
-        atr = float(tr.ewm(alpha=1/14, min_periods=14, adjust=False).mean().iloc[-1])
-
-        # 52주 위치
         h252      = df.tail(252)
         w52_high  = float(h252["High"].max())
         w52_low   = float(h252["Low"].min())
         from_high = (price - w52_high) / w52_high * 100
         from_low  = (price - w52_low)  / w52_low  * 100
+        perf_3m   = ((price / float(close.iloc[-63])) - 1) * 100 if len(close) >= 63 else 0
 
-        # 3개월 수익률
-        perf_3m = ((price / float(close.iloc[-63])) - 1) * 100 if len(close) >= 63 else 0
+        earn_blocked = get_earnings_within_3d(ticker)
 
-        # SEPA 정렬
-        sma150   = float(close.rolling(150).mean().iloc[-1])
-        sepa     = sma50 > sma150 > sma200
-        above200 = price > sma200
+        if mode == "MR":
+            required = {
+                "SMA200 위":           price > s200,
+                "RSI(2) ≤ 15":        rsi2_v <= 15,
+                "어닝 3일내 없음":     not earn_blocked,
+                "SPY RSI(2) > 10":    spy_rsi2 > 10,
+                "52주고점 -40%이내":  from_high >= -40,
+            }
+            preferred = {
+                "BB 하단 터치":    bb_touch,
+                "RVOL < 1.2":      rvol < 1.2,
+                "연속 하락 3일+":  consec >= 3,
+                "VIX ≤ 25":        vix_ok,
+                "SMA200 상승 중":  sma200_rising,
+            }
+        else:  # MOM
+            eps_ok = _check_eps_growth(ticker)
+            required = {
+                "시장 레짐 Bull":  mom_ok,
+                "RSI(14) 50~70":  50 <= rsi14_v <= 70,
+                "어닝 3일내 없음": not earn_blocked,
+                "SMA200 상승 중": sma200_rising,
+            }
+            preferred = {
+                "SEPA 정렬":           sepa,
+                "RVOL ≥ 1.2":          rvol >= 1.2,
+                "3개월 +10%":          perf_3m >= 10,
+                "52주고점 -25%이내":   from_high >= -25,
+                "52주저점 +30%이상":   from_low >= 30,
+                "RSI(2) < 80":         rsi2_v < 80,
+                "EPS YoY +25% [참고]": eps_ok,
+            }
 
-        # 어닝 체크
-        earn_blocked = False
-        try:
-            tk  = yf.Ticker(ticker)
-            cal = tk.calendar
-            today = datetime.date.today()
-            earn_date = None
-            if isinstance(cal, dict):
-                raw_e = cal.get("Earnings Date")
-                if raw_e:
-                    earn_date = pd.Timestamp(
-                        raw_e[0] if isinstance(raw_e, (list, tuple)) else raw_e
-                    ).date()
-            if earn_date:
-                days = (earn_date - today).days
-                earn_blocked = -1 <= days <= 3
-        except Exception:
-            pass
+        req_pass  = sum(required.values())
+        pref_pass = sum(preferred.values())
+        pref_pct  = pref_pass / len(preferred) if preferred else 0
 
-        # ── 내일 상승 가능성 점수 계산 ──
-        score = 0.0
+        if req_pass < len(required):
+            score, win_rate = "FAIL", "—"
+        elif pref_pct >= 1.0:
+            score, win_rate = ("A", "75~82%") if mode == "MR" else ("A", "70~78%")
+        elif pref_pct >= 0.7:
+            score, win_rate = ("B+", "68~75%") if mode == "MR" else ("B+", "63~70%")
+        else:
+            score, win_rate = ("B-", "60~65%") if mode == "MR" else ("B-", "55~63%")
 
-        # 1) 오늘 상승폭 (최대 20점) — 너무 많이 오르면 오히려 감점
-        if 2 <= chg <= 8:
-            score += 20        # 적당한 상승 → 모멘텀 지속 가능
-        elif 8 < chg <= 15:
-            score += 10        # 많이 올랐지만 OK
-        elif chg > 15:
-            score += 0         # 너무 많이 올랐음 → 내일 되돌림 위험
-
-        # 2) SMA200 위 (15점)
-        if above200:
-            score += 15
-
-        # 3) RSI(14) 50~75 구간 (20점) — 모멘텀 있으나 과매수 아님
-        if 50 <= rsi14 <= 75:
-            score += 20
-        elif 75 < rsi14 <= 85:
-            score += 5         # 약간 과매수
-
-        # 4) RVOL (최대 20점)
-        score += min((rvol - 1.0) / 2.0, 1.0) * 20
-
-        # 5) SEPA 정렬 (10점)
-        if sepa:
-            score += 10
-
-        # 6) 52주 위치 (최대 10점) — 신고가 근접할수록 유리
-        if from_high >= -10:
-            score += 10
-        elif from_high >= -20:
-            score += 7
-        elif from_high >= -30:
-            score += 3
-
-        # 7) 3개월 수익률 (최대 10점)
-        score += min(perf_3m / 30, 1.0) * 10
-
-        # 감점
-        if earn_blocked:
-            score -= 30        # 어닝 3일내 → 위험
-        if rsi14 > 85:
-            score -= 10        # 극단 과매수
-        if from_high < -40:
-            score -= 20        # 망가진 종목
-
-        # 포지션 사이징
         risk_dollar = ACCOUNT_SIZE * (RISK_PCT / 100)
-        shares      = int(risk_dollar / atr) if atr > 0 else 0
+        shares      = int(risk_dollar / atr_v) if atr_v > 0 else 0
         pos_value   = shares * price
-        stop_price  = round(price - 2 * atr, 2)   # 2ATR 손절
-        target_price = round(price * 1.05, 2)       # +5% 목표
+        stop_3atr   = price - 3 * atr_v
 
         return {
             "ticker":       ticker,
             "price":        round(price, 2),
-            "chg":          round(chg, 2),
-            "score":        round(score, 1),
-            "rsi14":        round(rsi14, 1),
-            "rsi2":         round(rsi2, 1),
+            "rsi2":         round(rsi2_v, 1),
+            "rsi14":        round(rsi14_v, 1),
             "rvol":         round(rvol, 2),
-            "atr":          round(atr, 2),
-            "above200":     above200,
-            "sepa":         sepa,
-            "from_high":    round(from_high, 1),
+            "consec":       consec,
+            "bb_touch":     bb_touch,           # 추가
+            "atr":          round(atr_v, 2),
             "perf_3m":      round(perf_3m, 1),
+            "from_high":    round(from_high, 1),
+            "from_low":     round(from_low, 1),
+            "sepa":         sepa,
             "earn_blocked": earn_blocked,
+            "score":        score,
+            "win_rate":     win_rate,
             "shares":       shares,
             "pos_value":    round(pos_value),
-            "stop_price":   stop_price,
-            "target_price": target_price,
+            "stop_3atr":    round(stop_3atr, 2),
+            "target_8pct":  round(price * 1.08, 2),
         }
-
-    except Exception as e:
-        print(f"  {ticker} 분석 실패: {e}")
+    except Exception:
         return None
 
 
-# ══════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════
 # 텔레그램 메시지 조립
-# ══════════════════════════════════════════════════
-def build_message(top10: list, top2: list) -> str:
+# ══════════════════════════════════════════════════════
+def build_message(regime, spy_p, spy_s200, qqq_p, qqq_s200,
+                  vix, spy_rsi2, mr_top2, mom_top2):
+
     now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M KST")
+    spy_margin = (spy_p - spy_s200) / spy_s200 * 100 if spy_p and spy_s200 else 0
+    qqq_margin = (qqq_p - qqq_s200) / qqq_s200 * 100 if qqq_p and qqq_s200 else 0
+    regime_emoji = {"STRONG_BULL": "🟢", "WEAK_BULL": "🟡", "BEAR": "🔴"}.get(regime, "⚪")
+    vix_str = f"{vix:.1f}" if vix is not None else "N/A"
+    rsi2_str = f"{spy_rsi2:.1f}" if spy_rsi2 is not None else "N/A"
 
     lines = [
-        f"<b>📈 APEX Daily TOP2 — {now}</b>",
-        f"장마감 20분전 · 내일 상승 유력 종목",
+        f"<b>🚦 APEX Daily — {now}</b>",
+        f"레짐: {regime_emoji} {regime}",
+        f"SPY {spy_margin:+.1f}%  QQQ {qqq_margin:+.1f}%  VIX {vix_str}  RSI2 {rsi2_str}",
         "─────────────────────",
     ]
 
-    if not top2:
-        lines += [
-            "⚠ 오늘은 조건 충족 종목 없음",
-            "내일 다시 확인하세요",
-        ]
-    else:
-        lines.append("<b>🎯 내일 추천 TOP2</b>")
-        lines.append("")
-
-        for idx, r in enumerate(top2):
+    # MR TOP2
+    lines.append("<b>🔄 MR 오늘의 추천</b>")
+    if mr_top2:
+        for idx, r in enumerate(mr_top2):
             rank = ["1️⃣", "2️⃣"][idx]
-            earn_warn = " 🚨어닝주의" if r["earn_blocked"] else ""
             lines += [
-                f"{rank} <b>{r['ticker']}</b>  ${r['price']}  오늘 +{r['chg']}%{earn_warn}",
-                f"   RSI(14): {r['rsi14']}  RVOL: {r['rvol']}x  52주고점: {r['from_high']}%",
-                f"   SMA200: {'✓위' if r['above200'] else '✗아래'}  SEPA: {'✓' if r['sepa'] else '✗'}",
-                f"   🎯 목표 ${r['target_price']} (+5%)  🛑 손절 ${r['stop_price']}",
+                f"{rank} <b>{r['ticker']}</b>  ${r['price']}  [{r['score']}]",
+                f"   RSI(2): {r['rsi2']}  RVOL: {r['rvol']}x  ↓{r['consec']}일  BB: {'✓' if r['bb_touch'] else '✗'}",
+                f"   ⏰ 04:30 KST 매수  |  손절 ${r['stop_3atr']}",
                 f"   📐 {r['shares']}주 = ${r['pos_value']:,}",
                 "",
             ]
+    else:
+        lines.append("   조건 충족 종목 없음 — 오늘은 패스\n")
 
-    # 오늘 상위 10개 요약
     lines.append("─────────────────────")
-    lines.append("<b>📊 오늘 상승 TOP10</b>")
-    for i, r in enumerate(top10[:10]):
-        lines.append(f"  {i+1}. {r['ticker']}  +{r['chg']}%  ${r['price']}")
+
+    # MOM TOP2
+    lines.append("<b>🚀 MOM 오늘의 추천</b>")
+    if mom_top2:
+        for idx, r in enumerate(mom_top2):
+            rank = ["1️⃣", "2️⃣"][idx]
+            lines += [
+                f"{rank} <b>{r['ticker']}</b>  ${r['price']}  [{r['score']}]",
+                f"   RSI(14): {r['rsi14']}  RVOL: {r['rvol']}x  3M: +{r['perf_3m']}%",
+                f"   ⏰ 23:00 KST 매수  |  목표 +8% ${r['target_8pct']}",
+                f"   📐 {r['shares']}주 = ${r['pos_value']:,}",
+                "",
+            ]
+    else:
+        lines.append("   Bear 레짐 — MOM 패스\n")
 
     lines += [
         "─────────────────────",
@@ -322,42 +404,61 @@ def build_message(top10: list, top2: list) -> str:
     return "\n".join(lines)
 
 
-# ══════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════
 # 메인 실행
-# ══════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════
 def run():
-    print(f"\n[{datetime.datetime.now().strftime('%H:%M:%S')}] APEX Daily TOP2 시작...")
+    print(f"\n[{datetime.datetime.now().strftime('%H:%M:%S')}] APEX 스캔 시작...")
 
-    # 1) 당일 상승 상위 10개 추출
-    top10 = get_top10_gainers(SP500_TICKERS)
-    if not top10:
-        send_telegram("⚠ APEX: 오늘 상승 종목 데이터 수집 실패")
-        return
+    # 1) 시장 데이터
+    spy_p, spy_s200, _ = get_index_data("SPY")
+    qqq_p, qqq_s200, _ = get_index_data("QQQ")
+    vix      = get_vix()
+    spy_rsi2 = get_spy_rsi2()
 
-    # 2) 상위 10개 상세 분석
-    print(f"  상위 10개 상세 분석 중...")
-    analyzed = []
-    for r in top10:
-        result = analyze_for_tomorrow(r["ticker"], r["price"], r["chg"])
-        if result:
-            analyzed.append(result)
-        time.sleep(0.5)
+    vix_ok = vix is not None and vix <= 25
+    regime = get_regime(spy_p, spy_s200, qqq_p, qqq_s200)
+    mom_ok = regime in ["STRONG_BULL", "WEAK_BULL"]
+    mr_ok  = spy_rsi2 is not None and spy_rsi2 > 10
 
-    # 3) 점수 기준 정렬 → TOP2 선별
-    analyzed.sort(key=lambda x: x["score"], reverse=True)
+    rsi2_str = f"{spy_rsi2:.1f}" if spy_rsi2 is not None else "N/A"
+    print(f"  레짐: {regime}  VIX: {vix}  SPY RSI(2): {rsi2_str}")
 
-    # 어닝 없는 것 우선, 점수 순
-    safe     = [r for r in analyzed if not r["earn_blocked"]]
-    top2     = safe[:2] if safe else analyzed[:2]
+    # 2) MR 스캔
+    print("  MR Finviz 스크리닝...")
+    mr_tickers = run_finviz("MR") if mr_ok else []
+    print(f"  MR 후보: {len(mr_tickers)}개")
+    mr_results = []
+    for t in mr_tickers:
+        r = analyze_stock(t, "MR", spy_rsi2, mom_ok, vix_ok)
+        if r and r["score"] != "FAIL":
+            mr_results.append(r)
+        time.sleep(1)
+    mr_results.sort(key=lambda x: _mr_rank_score(x), reverse=True)
+    mr_top2 = mr_results[:2]
 
-    print(f"  TOP2: {[r['ticker'] for r in top2]}")
-    for r in top2:
-        print(f"    {r['ticker']} 점수={r['score']} RSI14={r['rsi14']} RVOL={r['rvol']}")
+    # 3) MOM 스캔
+    print("  MOM Finviz 스크리닝...")
+    mom_tickers = run_finviz("MOM") if mom_ok else []
+    print(f"  MOM 후보: {len(mom_tickers)}개")
+    mom_results = []
+    for t in mom_tickers:
+        r = analyze_stock(t, "MOM", spy_rsi2, mom_ok, vix_ok)
+        if r and r["score"] != "FAIL":
+            mom_results.append(r)
+        time.sleep(1)
+    mom_results.sort(key=lambda x: _mom_rank_score(x), reverse=True)
+    mom_top2 = mom_results[:2]
 
-    # 4) 텔레그램 전송
-    msg = build_message(top10, top2)
-    ok  = send_telegram(msg)
+    # 4) 전송
+    msg = build_message(
+        regime, spy_p, spy_s200, qqq_p, qqq_s200,
+        vix, spy_rsi2, mr_top2, mom_top2
+    )
+    ok = send_telegram(msg)
     print(f"  전송: {'성공' if ok else '실패'}")
+    print(f"  MR TOP2: {[r['ticker'] for r in mr_top2]}")
+    print(f"  MOM TOP2: {[r['ticker'] for r in mom_top2]}")
 
 
 if __name__ == "__main__":
