@@ -419,7 +419,7 @@ with tab_manual:
         elif hasattr(result, "__len__") and len(result) > 0:
             st.success(f"✅ {len(result)}개 발견!")
             if hasattr(result, "columns") and "Ticker" in result.columns:
-                show = [c for c in ["Ticker", "Company", "Price", "Change"] if c in result.columns]
+                show = [c for c in ["Ticker", "Company", "Price", "Change", "Rel Volume", "Volume"] if c in result.columns]
                 st.dataframe(result[show], use_container_width=True, hide_index=True)
                 tickers = result["Ticker"].tolist(); st.code(", ".join(tickers))
                 st.divider()
