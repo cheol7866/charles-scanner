@@ -240,6 +240,45 @@ def _consec_down(close):
             break
     return count
 
+def _mr_rank_score(r: dict) -> float:
+    """
+    MR 후보 종목 랭킹 점수 계산 — 높을수록 우선순위 높음.
+    기준: RSI(2) 낮음 + BB터치 + 연속하락 + RVOL 낮음 + 등급
+    """
+    score = 0.0
+    # RSI(2): 낮을수록 과매도 심화 → 반등 폭 클 가능성 (최대 40점)
+    score += max(0, (15 - r.get("rsi2", 15)) / 15 * 40)
+    # BB 하단 터치 여부 (20점)
+    score += 20 if r.get("bb_touch", False) else 0
+    # 연속 하락일수 (최대 20점, 5일 기준)
+    score += min(r.get("consec", 0) / 5, 1.0) * 20
+    # RVOL 낮을수록 조용한 눌림목 (최대 10점)
+    rvol = r.get("rvol", 1.2)
+    score += max(0, (1.2 - rvol) / 1.2 * 10)
+    # 등급 보너스
+    grade_bonus = {"A": 10, "B+": 5, "B-": 0, "FAIL": -99}
+    score += grade_bonus.get(r.get("score", "FAIL"), 0)
+    return score
+
+def _mom_rank_score(r: dict) -> float:
+    """
+    MOM 후보 종목 랭킹 점수 계산.
+    기준: 3개월 퍼포먼스 + RVOL + SEPA + 52주 위치 + 등급
+    """
+    score = 0.0
+    # 3개월 수익률 (최대 30점)
+    score += min(r.get("perf_3m", 0) / 30, 1.0) * 30
+    # RVOL (최대 20점)
+    score += min((r.get("rvol", 1.0) - 1.0) / 1.0, 1.0) * 20
+    # SEPA 정렬 (20점)
+    score += 20 if r.get("sepa", False) else 0
+    # 52주 저점 대비 위치 (최대 15점)
+    score += min(r.get("from_low", 0) / 100, 1.0) * 15
+    # 등급 보너스
+    grade_bonus = {"A": 15, "B+": 7, "B-": 0, "FAIL": -99}
+    score += grade_bonus.get(r.get("score", "FAIL"), 0)
+    return score
+
 @st.cache_data(ttl=600, show_spinner=False)
 def run_finviz_dr(mode, sectors_list):
     """Daily Report용 Finviz 스크리닝"""
@@ -673,14 +712,34 @@ with tab_report:
                             if r: results.append(r)
                             prog.progress((i+1)/len(tickers))
                         prog.empty()
-                        so = {"A":0,"B+":1,"B-":2,"FAIL":3}
-                        results.sort(key=lambda x: (so.get(x["score"],9), x["rsi2"]))
+                        # FAIL 제거 후 랭킹 점수 기준 정렬
+                        results = [r for r in results if r["score"] != "FAIL"]
+                        results.sort(key=lambda x: _mr_rank_score(x), reverse=True)
                         st.session_state["dr_mr"] = results
 
             if "dr_mr" in st.session_state and st.session_state["dr_mr"]:
                 results = st.session_state["dr_mr"]
                 enterable = [r for r in results if r["score"] in ["A","B+"]]
-                st.success(f"✅ 후보 {len(results)}개 | 진입 가능 **{len(enterable)}개**")
+
+                # ── TOP 2 오늘의 추천 ──
+                top2 = enterable[:2]
+                if top2:
+                    st.markdown("### 🎯 오늘의 추천 — TOP 2")
+                    for idx, r in enumerate(top2):
+                        rank_label = ["1️⃣", "2️⃣"][idx]
+                        emj = {"A":"🟢","B+":"🔵"}.get(r["score"],"⚪")
+                        st.markdown(f"""
+<div style="background:#1a3a2a;border-radius:12px;padding:14px 16px;margin:6px 0;border:1px solid #2d6a4f">
+<b>{rank_label} {emj} {r['ticker']}</b> &nbsp; ${r['price']} &nbsp; [{r['score']}] 승률 {r['win_rate']}<br>
+RSI(2): <b>{r['rsi2']}</b> &nbsp;|&nbsp; RVOL: {r['rvol']}x &nbsp;|&nbsp; 연속↓: {r['consec']}일 &nbsp;|&nbsp; BB하단: {'✅' if r['bb_touch'] else '❌'}<br>
+⏰ 매수 <b>04:30 KST</b> &nbsp;|&nbsp; 🎯 익절 RSI(2)>70 &nbsp;|&nbsp; 🛑 손절 ${r['price'] - r['atr']*3:.2f}<br>
+📐 {r['shares']}주 × ${r['price']} = <b>${r['pos_value']:,}</b> (계좌 {r['pos_pct']}%)
+</div>""", unsafe_allow_html=True)
+                else:
+                    st.warning("⚠️ 오늘 A/B+ 등급 후보 없음 — 오늘은 쉬는 날")
+
+                st.divider()
+                st.success(f"✅ 전체 후보 {len(results)}개 | 진입 가능 {len(enterable)}개")
 
                 for r in results:
                     emj = {"A":"🟢","B+":"🔵","B-":"🟡","FAIL":"🔴"}.get(r["score"],"⚪")
@@ -735,14 +794,34 @@ with tab_report:
                             if r: results.append(r)
                             prog.progress((i+1)/len(tickers))
                         prog.empty()
-                        so = {"A":0,"B+":1,"B-":2,"FAIL":3}
-                        results.sort(key=lambda x: (so.get(x["score"],9), -x.get("perf_3m",0)))
+                        # FAIL 제거 후 랭킹 점수 기준 정렬
+                        results = [r for r in results if r["score"] != "FAIL"]
+                        results.sort(key=lambda x: _mom_rank_score(x), reverse=True)
                         st.session_state["dr_mom"] = results
 
             if "dr_mom" in st.session_state and st.session_state["dr_mom"]:
                 results = st.session_state["dr_mom"]
                 enterable = [r for r in results if r["score"] in ["A","B+"]]
-                st.success(f"✅ 후보 {len(results)}개 | 진입 가능 **{len(enterable)}개**")
+
+                # ── TOP 2 오늘의 추천 ──
+                top2 = enterable[:2]
+                if top2:
+                    st.markdown("### 🎯 오늘의 추천 — TOP 2")
+                    for idx, r in enumerate(top2):
+                        rank_label = ["1️⃣", "2️⃣"][idx]
+                        emj = {"A":"🟢","B+":"🔵"}.get(r["score"],"⚪")
+                        st.markdown(f"""
+<div style="background:#1a2a3a;border-radius:12px;padding:14px 16px;margin:6px 0;border:1px solid #2d4a6f">
+<b>{rank_label} {emj} {r['ticker']}</b> &nbsp; ${r['price']} &nbsp; [{r['score']}] 승률 {r['win_rate']}<br>
+RSI(14): <b>{r['rsi14']}</b> &nbsp;|&nbsp; RVOL: {r['rvol']}x &nbsp;|&nbsp; 3M: +{r['perf_3m']}% &nbsp;|&nbsp; SEPA: {'✅' if r['sepa'] else '❌'}<br>
+⏰ 매수 <b>23:00 KST</b> &nbsp;|&nbsp; 🎯 익절 +8% ${r['price']*1.08:.2f} &nbsp;|&nbsp; ⏱️ 타임스탑 15일<br>
+📐 {r['shares']}주 × ${r['price']} = <b>${r['pos_value']:,}</b> (계좌 {r['pos_pct']}%)
+</div>""", unsafe_allow_html=True)
+                else:
+                    st.warning("⚠️ 오늘 A/B+ 등급 MOM 후보 없음")
+
+                st.divider()
+                st.success(f"✅ 전체 후보 {len(results)}개 | 진입 가능 {len(enterable)}개")
 
                 for r in results:
                     emj = {"A":"🟢","B+":"🔵","B-":"🟡","FAIL":"🔴"}.get(r["score"],"⚪")
