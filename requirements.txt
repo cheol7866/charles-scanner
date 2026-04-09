@@ -1,8 +1,6 @@
+streamlit>=1.28.0
 yfinance>=0.2.36
 pandas>=2.0.0
-numpy>=1.24.0
-anthropic>=0.25.0
-lxml>=4.9.0
-html5lib>=1.1
-finvizfinance
-plotly
+requests>=2.31.0
+finvizfinance>=0.14.6
+plotly>=5.18.0
