@@ -299,6 +299,48 @@ st.caption("신호등 모두 초록 → 진입 / 하나라도 빨강 → 오늘 
 if st.button("🔄 새로고침", use_container_width=True): st.cache_data.clear(); st.rerun()
 st.divider()
 
+with st.spinner("시장 데이터..."):
+    spy_price, spy_sma200, spy_chg = _ci("SPY")
+    qqq_price, qqq_sma200, qqq_chg = _ci("QQQ")
+    vix_now = _cv()
+
+def _sig(label, price, sma200, chg):
+    if price and sma200:
+        gap = (price - sma200) / sma200 * 100; n = "📈" if chg > 0 else "📉"
+        if gap >= 3: st.success(f"**{label} 🟢** ${price:.1f} > SMA200 ${sma200:.1f} ({gap:+.1f}%) | {chg:+.2f}% {n}")
+        elif gap > 0: st.warning(f"**{label} 🟡** ${price:.1f} ({gap:+.1f}% < 3%) | {chg:+.2f}% {n}")
+        else: st.error(f"**{label} 🔴** ${price:.1f} < SMA200 ${sma200:.1f} ({gap:.1f}%) | {chg:+.2f}% {n}")
+        return gap >= 3
+    st.warning(f"**{label} ⚪**"); return False
+
+spy_ok = _sig("① SPY", spy_price, spy_sma200, spy_chg)
+qqq_ok = _sig("① QQQ", qqq_price, qqq_sma200, qqq_chg)
+
+if vix_now:
+    if vix_now <= 20: vix_ok = True; st.success(f"**② VIX 🟢** {vix_now:.1f}")
+    elif vix_now <= 25: vix_ok = True; st.warning(f"**② VIX 🟡** {vix_now:.1f}")
+    else: vix_ok = False; st.error(f"**② VIX 🔴** {vix_now:.1f}")
+else: st.warning("**② VIX ⚪**"); vix_ok = False; vix_now = 0
+
+st.markdown("**③ 이벤트**")
+c1, c2 = st.columns(2)
+with c1: has_fed = st.checkbox("🏦 Fed"); has_trade = st.checkbox("📢 관세")
+with c2: has_cpi = st.checkbox("📊 CPI/PPI"); has_other = st.checkbox("⚠️ 기타")
+event_risk = has_fed or has_trade or has_cpi or has_other
+if event_risk: st.error("**이벤트 🔴**")
+else: st.success("**이벤트 🟢 없음**")
+st.divider()
+
+vix_ok_val = vix_now is not None and vix_now <= 25
+all_green = spy_ok and qqq_ok and vix_ok_val and not event_risk
+
+def _box(e, t, s, bg):
+    c = "#00C853" if bg == "#1a4731" else "#FF5252" if bg == "#3d1a1a" else "#FFD700"
+    return f'<div style="background:{bg};border-radius:16px;padding:20px;text-align:center;margin:8px 0"><div style="font-size:3rem">{e}</div><div style="font-size:1.6rem;font-weight:bold;color:{c}">{t}</div><div style="color:#aaa;margin-top:8px">{s}</div></div>'
+
+if all_green: st.markdown(_box("✅", "GO — 진입 가능", "모두 충족", "#1a4731"), unsafe_allow_html=True)
+elif event_risk: st.markdown(_box("🔴", "이벤트 주의", "내일 다시", "#3d1a1a"), unsafe_allow_html=True)
+else: st.markdown(_box("🟡", "주의", "종목별 확인", "#2d2d00"), unsafe_allow_html=True)
 st.divider()
 
 _spy_rsi2 = get_spy_rsi2()
