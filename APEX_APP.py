@@ -369,13 +369,13 @@ def analyze_stock_dr(ticker, mode, spy_rsi2_val, mom_ok_val, vix_ok_val, account
                 "어닝 3일내 없음":     not earn["within_3d"],
                 "SPY RSI(2) > 10":    spy_rsi2_val > 10,
                 "52주고점 -40%이내":  from_high >= -40,   # 망가진 종목 배제
-                "SMA200 상승 중":     sma200_rising,       # 지지선 역할 확인
             }
             preferred = {
-                "BB 하단 터치":   price <= bb_low_v * 1.005,
-                "RVOL < 1.2":     rvol < 1.2,
-                "연속 하락 3일+": consec >= 3,
-                "VIX ≤ 25":       vix_ok_val,
+                "BB 하단 터치":    price <= bb_low_v * 1.005,
+                "RVOL < 1.2":      rvol < 1.2,
+                "연속 하락 3일+":  consec >= 3,
+                "VIX ≤ 25":        vix_ok_val,
+                "SMA200 상승 중":  sma200_rising,   # Bear 레짐엔 불리 → 선호로
             }
         else:
             required = {
