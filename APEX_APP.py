@@ -187,7 +187,7 @@ def run_screener(sector: str, mode: str = "MOM"):
                 "200-Day Simple Moving Average": "Price above SMA200",
                 "RSI (14)":          "Oversold (40)",
                 "Average Volume":    "Over 500K",
-                "Market Cap":        "Mid ($2bln to $10bln) to Large (over $10bln)",  # 소형·부실주 배제
+                "Market Cap.":       "+Mid (over $2bln)",  # 소형·부실주 배제
                 "EPS growthqtr over qtr": "Positive (>0%)",                           # 적자 기업 배제
                 "Industry":          "Stocks only (ex-Funds)",
                 "Price":             "Over $10",
@@ -302,7 +302,7 @@ def run_finviz_dr(mode, sectors_list):
                 "200-Day Simple Moving Average": "Price above SMA200",
                 "RSI (14)":          "Oversold (40)",
                 "Average Volume":    "Over 500K",
-                "Market Cap":        "Mid ($2bln to $10bln) to Large (over $10bln)",  # 소형·부실주 배제
+                "Market Cap.":       "+Mid (over $2bln)",  # 소형·부실주 배제
                 "EPS growthqtr over qtr": "Positive (>0%)",                           # 적자 기업 배제
                 "Industry":          "Stocks only (ex-Funds)",
                 "Price":             "Over $10",
