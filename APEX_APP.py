@@ -406,11 +406,22 @@ with tab_manual:
         with st.spinner("Finviz..."):
             try:
                 from finvizfinance.screener.overview import Overview
+                from finvizfinance.screener.technical import Technical
                 m = "MOM" if is_mom else "MR"
-                if m == "MOM": ff = {"200-Day Simple Moving Average": "Price above SMA200", "50-Day Simple Moving Average": "Price above SMA50", "RSI (14)": "Not Overbought (<60)", "Performance": "Quarter +10%", "Average Volume": "Over 500K", "Industry": "Stocks only (ex-Funds)", "Price": "Over $10"}
+                if m == "MOM": ff = {"200-Day Simple Moving Average": "Price above SMA200", "50-Day Simple Moving Average": "Price above SMA50", "RSI (14)": "Not Overbought (<60)", "Performance": "Quarter +10%", "Average Volume": "Over 500K", "Industry": "Stocks only (ex-Funds)", "Relative Volume": "Over 1.5", "Current Volume": "Over 500K", "Price": "Over $10"}
                 else: ff = {"200-Day Simple Moving Average": "Price above SMA200", "RSI (14)": "Oversold (40)", "Average Volume": "Over 500K", "Industry": "Stocks only (ex-Funds)", "Price": "Over $10"}
                 if sector != "전체": ff["Sector"] = sector
-                fov = Overview(); fov.set_filter(filters_dict=ff); st.session_state.scan_result = fov.screener_view()
+                fov = Overview(); fov.set_filter(filters_dict=ff); df_overview = fov.screener_view()
+                # Technical 뷰에서 Rel Volume 가져오기
+                try:
+                    ftc = Technical(); ftc.set_filter(filters_dict=ff); df_tech = ftc.screener_view()
+                    if df_tech is not None and not df_tech.empty and "Rel Volume" in df_tech.columns:
+                        rvol_map = dict(zip(df_tech["Ticker"], df_tech["Rel Volume"]))
+                        if df_overview is not None and not df_overview.empty:
+                            df_overview["RVOL"] = df_overview["Ticker"].map(rvol_map)
+                except Exception:
+                    pass
+                st.session_state.scan_result = df_overview
             except Exception as e: st.session_state.scan_result = str(e)
     result = st.session_state.scan_result
     if result is not None:
@@ -419,7 +430,7 @@ with tab_manual:
         elif hasattr(result, "__len__") and len(result) > 0:
             st.success(f"✅ {len(result)}개 발견!")
             if hasattr(result, "columns") and "Ticker" in result.columns:
-                show = [c for c in ["Ticker", "Company", "Price", "Change", "Rel Volume", "Volume"] if c in result.columns]
+                show = [c for c in ["Ticker", "Company", "Price", "Change", "RVOL"] if c in result.columns]
                 st.dataframe(result[show], use_container_width=True, hide_index=True)
                 tickers = result["Ticker"].tolist(); st.code(", ".join(tickers))
                 st.divider()
