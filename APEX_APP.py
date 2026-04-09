@@ -185,10 +185,12 @@ def run_screener(sector: str, mode: str = "MOM"):
         else:
             filters = {
                 "200-Day Simple Moving Average": "Price above SMA200",
-                "RSI (14)":                      "Oversold (40)",
-                "Average Volume":                "Over 500K",
-                "Industry":                      "Stocks only (ex-Funds)",
-                "Price":                         "Over $10",
+                "RSI (14)":          "Oversold (40)",
+                "Average Volume":    "Over 500K",
+                "Market Cap":        "Mid ($2bln to $10bln) to Large (over $10bln)",  # 소형·부실주 배제
+                "EPS growthqtr over qtr": "Positive (>0%)",                           # 적자 기업 배제
+                "Industry":          "Stocks only (ex-Funds)",
+                "Price":             "Over $10",
             }
         if sector != "전체":
             filters["Sector"] = sector
@@ -259,10 +261,12 @@ def run_finviz_dr(mode, sectors_list):
         else:
             filters = {
                 "200-Day Simple Moving Average": "Price above SMA200",
-                "RSI (14)": "Oversold (40)",
-                "Average Volume": "Over 500K",
-                "Industry": "Stocks only (ex-Funds)",
-                "Price": "Over $10",
+                "RSI (14)":          "Oversold (40)",
+                "Average Volume":    "Over 500K",
+                "Market Cap":        "Mid ($2bln to $10bln) to Large (over $10bln)",  # 소형·부실주 배제
+                "EPS growthqtr over qtr": "Positive (>0%)",                           # 적자 기업 배제
+                "Industry":          "Stocks only (ex-Funds)",
+                "Price":             "Over $10",
             }
         if sectors_list and len(sectors_list) == 1 and sectors_list[0] != "전체":
             filters["Sector"] = sectors_list[0]
@@ -321,16 +325,18 @@ def analyze_stock_dr(ticker, mode, spy_rsi2_val, mom_ok_val, vix_ok_val, account
 
         if mode == "MR":
             required = {
-                "SMA200 위 (종목)": price > s200,
-                "RSI(2) ≤ 15": rsi2_v <= 15,
-                "어닝 3일내 없음": not earn["within_3d"],
-                "SPY RSI(2) > 10": spy_rsi2_val > 10,
+                "SMA200 위 (종목)":    price > s200,
+                "RSI(2) ≤ 15":        rsi2_v <= 15,
+                "어닝 3일내 없음":     not earn["within_3d"],
+                "SPY RSI(2) > 10":    spy_rsi2_val > 10,
+                "52주고점 -40%이내":  from_high >= -40,   # 망가진 종목 배제
+                "SMA200 상승 중":     sma200_rising,       # 지지선 역할 확인
             }
             preferred = {
-                "BB 하단 터치": price <= bb_low_v * 1.005,
-                "RVOL < 1.2": rvol < 1.2,
+                "BB 하단 터치":   price <= bb_low_v * 1.005,
+                "RVOL < 1.2":     rvol < 1.2,
                 "연속 하락 3일+": consec >= 3,
-                "VIX ≤ 25": vix_ok_val,
+                "VIX ≤ 25":       vix_ok_val,
             }
         else:
             required = {
@@ -1777,10 +1783,20 @@ with tab_hold:
                     sell_signals = []
 
                     if is_mr:
-                        # MR 청산: ①RSI(2)>70 ②10일 타임스탑 ③3ATR 재난손절
-                        tp_hit = h_rsi2 > 70
+                        # MR 청산: ①RSI(2)>70 ②10일 타임스탑 ③3ATR 재난손절 ④상대적 약세
+                        tp_hit   = h_rsi2 > 70
                         time_hit = h_hold_days >= 10
                         stop_hit = h_curr <= h_stop_3atr
+
+                        # ④ 상대적 약세 판단 — 당일 SPY 등락 vs 종목 등락 비교
+                        try:
+                            spy_today = yf.Ticker("SPY").history(period="2d", interval="1d")
+                            spy_chg = float(spy_today["Close"].pct_change().iloc[-1] * 100) if len(spy_today) >= 2 else 0
+                            stk_today = yf.Ticker(h_ticker).history(period="2d", interval="1d")
+                            stk_chg = float(stk_today["Close"].pct_change().iloc[-1] * 100) if len(stk_today) >= 2 else 0
+                            relative_weak = spy_chg >= 2.0 and stk_chg <= -1.0
+                        except Exception:
+                            spy_chg, stk_chg, relative_weak = 0, 0, False
 
                         s1, s2, s3 = st.columns(3)
                         with s1:
@@ -1801,6 +1817,15 @@ with tab_hold:
                                 sell_signals.append("3ATR 재난손절")
                             else:
                                 st.success(f"🟢 ③재난손절 안전\n\n현가 ${h_curr:.2f}\n손절선 ${h_stop_3atr:.2f}")
+
+                        # ④ 상대적 약세 경고 — 별도 표시
+                        if relative_weak:
+                            st.warning(
+                                f"⚠️ **④ 상대적 약세 경고**\n\n"
+                                f"SPY 당일 {spy_chg:+.1f}% 상승인데 {h_ticker} {stk_chg:+.1f}%\n"
+                                f"지수 오르는데 종목이 빠짐 → **청산 강력 검토**"
+                            )
+                            sell_signals.append("상대적 약세")
                     else:
                         # MOM 청산: ①+8% 익절 ②15일 타임스탑
                         tp_hit = h_pnl >= 8.0
@@ -1840,4 +1865,4 @@ with tab_hold:
     """, unsafe_allow_html=True)
 
             except Exception as e:
-                st.error(f"❌ 오류: {e}")          
+                st.error(f"❌ 오류: {e}")
