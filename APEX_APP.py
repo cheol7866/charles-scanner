@@ -413,14 +413,33 @@ with tab_manual:
                 if sector != "전체": ff["Sector"] = sector
                 fov = Overview(); fov.set_filter(filters_dict=ff); df_overview = fov.screener_view()
                 # Technical 뷰에서 Rel Volume 가져오기
+                rvol_done = False
                 try:
                     ftc = Technical(); ftc.set_filter(filters_dict=ff); df_tech = ftc.screener_view()
-                    if df_tech is not None and not df_tech.empty and "Rel Volume" in df_tech.columns:
-                        rvol_map = dict(zip(df_tech["Ticker"], df_tech["Rel Volume"]))
-                        if df_overview is not None and not df_overview.empty:
-                            df_overview["RVOL"] = df_overview["Ticker"].map(rvol_map)
+                    if df_tech is not None and not df_tech.empty:
+                        # 컬럼명 자동 탐지 (Rel Volume / Relative Volume 등)
+                        rv_col = None
+                        for c in df_tech.columns:
+                            if "rel" in c.lower() and "vol" in c.lower(): rv_col = c; break
+                        if rv_col:
+                            rvol_map = dict(zip(df_tech["Ticker"], df_tech[rv_col]))
+                            if df_overview is not None and not df_overview.empty:
+                                df_overview["RVOL"] = df_overview["Ticker"].map(rvol_map)
+                                rvol_done = True
                 except Exception:
                     pass
+                # fallback: Finviz에서 못 가져오면 yfinance로 계산
+                if not rvol_done and df_overview is not None and not df_overview.empty:
+                    rvol_list = []
+                    for t in df_overview["Ticker"].tolist():
+                        try:
+                            h = yf.Ticker(t).history(period="30d")
+                            if not h.empty and len(h) >= 20:
+                                avg_vol = h["Volume"].rolling(20).mean().iloc[-1]
+                                rvol_list.append(round(h["Volume"].iloc[-1] / avg_vol, 2) if avg_vol > 0 else 0)
+                            else: rvol_list.append(0)
+                        except Exception: rvol_list.append(0)
+                    df_overview["RVOL"] = rvol_list
                 st.session_state.scan_result = df_overview
             except Exception as e: st.session_state.scan_result = str(e)
     result = st.session_state.scan_result
