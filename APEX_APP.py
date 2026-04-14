@@ -256,7 +256,7 @@ def run_finviz_dr(mode, sectors_list):
                 "Change": "Up",
                 "Average Volume": "Over 500K",
                 "Industry": "Stocks only (ex-Funds)",
-                "Relative Volume": "Over 1.5",
+                "Relative Volume": "Over 1",
                 "Current Volume": "Over 500K",
                 "Price": "Over $10",
             }
