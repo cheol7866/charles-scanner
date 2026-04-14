@@ -176,7 +176,7 @@ def run_screener(sector: str, mode: str = "MOM"):
             filters = {
                 "200-Day Simple Moving Average": "Price above SMA200",
                 "50-Day Simple Moving Average":  "Price above SMA50",
-                "Performance":                   "Week Up",
+                "Performance":                   "Week +10%",
                 "Change":                        "Up",
                 "Average Volume":                "Over 500K",
                 "Industry":                      "Stocks only (ex-Funds)",
@@ -249,7 +249,7 @@ def run_finviz_dr(mode, sectors_list):
             filters = {
                 "200-Day Simple Moving Average": "Price above SMA200",
                 "50-Day Simple Moving Average": "Price above SMA50",
-                "Performance": "Week Up",
+                "Performance": "Week +10%",
                 "Change": "Up",
                 "Average Volume": "Over 500K",
                 "Industry": "Stocks only (ex-Funds)",
@@ -734,8 +734,10 @@ with tab_report:
                             prog.progress((i+1)/len(tickers))
                         prog.empty()
                         so = {"A":0,"B+":1,"B-":2,"FAIL":3}
-                        # MOM: 당일 하락 종목 제외 + 오늘 가장 강한 종목 우선
-                        results = [r for r in results if r.get("daily_chg", 0) > 0]
+                        # MOM: 당일 하락 제외 + 당일 +15% 초과 극단 제외 + 3개월 +200% 초과 제외 (펌프 위험)
+                        results = [r for r in results 
+                                   if 0 < r.get("daily_chg", 0) <= 15
+                                   and r.get("perf_3m", 0) <= 200]
                         results.sort(key=lambda x: (so.get(x["score"],9), -x.get("daily_chg", 0)))
                         st.session_state["dr_mom"] = results
 
