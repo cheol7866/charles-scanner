@@ -176,9 +176,7 @@ def run_screener(sector: str, mode: str = "MOM"):
             filters = {
                 "200-Day Simple Moving Average": "Price above SMA200",
                 "50-Day Simple Moving Average":  "Price above SMA50",
-                "RSI (14)":                      "Not Overbought (<60)",
-                "Performance":                   "Quarter +10%",
-                "Performance 2":                 "Week Up",
+                "Performance":                   "Week Up",
                 "Change":                        "Up",
                 "Average Volume":                "Over 500K",
                 "Industry":                      "Stocks only (ex-Funds)",
@@ -188,6 +186,7 @@ def run_screener(sector: str, mode: str = "MOM"):
             filters = {
                 "200-Day Simple Moving Average": "Price above SMA200",
                 "RSI (14)":                      "Oversold (40)",
+                "Performance":                   "Month Up",
                 "Average Volume":                "Over 500K",
                 "Industry":                      "Stocks only (ex-Funds)",
                 "Price":                         "Over $10",
@@ -250,20 +249,17 @@ def run_finviz_dr(mode, sectors_list):
             filters = {
                 "200-Day Simple Moving Average": "Price above SMA200",
                 "50-Day Simple Moving Average": "Price above SMA50",
-                "RSI (14)": "Not Overbought (<60)",
-                "Performance": "Quarter +10%",
-                "Performance 2": "Week Up",
+                "Performance": "Week Up",
                 "Change": "Up",
                 "Average Volume": "Over 500K",
                 "Industry": "Stocks only (ex-Funds)",
-                "Relative Volume": "Over 1",
-                "Current Volume": "Over 500K",
                 "Price": "Over $10",
             }
         else:
             filters = {
                 "200-Day Simple Moving Average": "Price above SMA200",
                 "RSI (14)": "Oversold (40)",
+                "Performance": "Month Up",
                 "Average Volume": "Over 500K",
                 "Industry": "Stocks only (ex-Funds)",
                 "Price": "Over $10",
@@ -340,7 +336,7 @@ def analyze_stock_dr(ticker, mode, spy_rsi2_val, mom_ok_val, vix_ok_val, account
         else:
             required = {
                 "시장 레짐 Bull": mom_ok_val,
-                "RSI(14) 50~70": 50 <= rsi14_v <= 70,
+                "RSI(14) < 80": rsi14_v < 80,
                 "어닝 3일내 없음": not earn["within_3d"],
                 "SMA200 상승 중": sma200_rising,
             }
@@ -819,7 +815,7 @@ with tab_manual:
     # ⑤ 종목 스캐너
     # ══════════════════════════════════════════════════════════
     st.markdown("## 🔍 종목 스캔")
-    st.caption("MOM: SMA200위+SMA50위+RSI<60+분기+10%+주간상승+당일상승+거래량500K+ | MR: SMA200위+RSI(14)<40+거래량500K+")
+    st.caption("MOM: SMA200위+SMA50위+주간+5%+당일상승 | MR: SMA200위+RSI(14)<40+월간상승")
 
     # 전략 선택 — RVOL 기준이 MOM/MR에 따라 달라짐
     strategy_mode = st.radio(
