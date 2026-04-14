@@ -1,19 +1,19 @@
-"""
-📊 APEX 시장 신호등 + 종목 스캐너 v3.0
-═══════════════════════════════════════
+     """
+📊 APEX 시장 신호등 + 종목 스캐너 v2.0 (모바일 최적화)
+────────────────────────────────────────────────────
 핵심 원칙: 신호등 모두 초록일 때만 진입.
-MOM: RVOL > 1.2 | MR : RVOL < 0.8
+MOM: RVOL > 1.2 (거래량 동반 상승 확인)
+MR : RVOL < 0.8 (과열 아님, 조용한 눌림목)
 
 설치: pip install streamlit yfinance pandas plotly finvizfinance requests
-실행: streamlit run APEX_APP.py
+실행: streamlit run APEX_modification_v2.py
 """
 
-from __future__ import annotations
-import datetime
-from typing import Optional
-import pandas as pd
 import streamlit as st
 import yfinance as yf
+import pandas as pd
+import requests
+import datetime
 
 try:
     import plotly.graph_objects as go
@@ -22,10 +22,191 @@ try:
 except ImportError:
     PLOTLY_OK = False
 
-# ══════════════════════════════════════════
-# 지표 계산
-# ══════════════════════════════════════════
-def calc_rsi(series, period):
+# ══════════════════════════════════════════════════════════
+# 페이지 설정 — 모바일 최적화
+# ══════════════════════════════════════════════════════════
+st.set_page_config(
+    page_title="🚦 APEX 신호등",
+    layout="centered",
+    page_icon="🚦",
+    initial_sidebar_state="collapsed"
+)
+
+st.markdown("""
+<style>
+    html, body, [class*="css"] { font-size: 16px; }
+    .stButton > button {
+        height: 3.5rem;
+        font-size: 1.1rem;
+        font-weight: bold;
+        border-radius: 12px;
+    }
+    [data-testid="stMetric"] {
+        background: #1E1E2E;
+        border-radius: 12px;
+        padding: 12px;
+        color: #FFFFFF;
+    }
+    [data-testid="stMetric"] label,
+    [data-testid="stMetric"] [data-testid="stMetricValue"],
+    [data-testid="stMetric"] [data-testid="stMetricDelta"] {
+        color: #FFFFFF !important;
+    }
+    .signal-box {
+        border-radius: 16px;
+        padding: 16px;
+        margin: 8px 0;
+        font-size: 1.1rem;
+    }
+    .block-container { padding-top: 1rem; }
+    .stSelectbox > div > div { font-size: 1rem; }
+</style>
+""", unsafe_allow_html=True)
+
+
+# ══════════════════════════════════════════════════════════
+# 캐시 함수
+# ══════════════════════════════════════════════════════════
+@st.cache_data(ttl=300, show_spinner=False)
+def get_index_signal(ticker: str):
+    """SPY 또는 QQQ 신호 반환: (price, sma200, chg)"""
+    try:
+        hist = yf.Ticker(ticker).history(period="300d", interval="1d")
+        if hist.empty or len(hist) < 200:
+            return None, None, None
+        price  = float(hist["Close"].iloc[-1])
+        sma200 = float(hist["Close"].rolling(200).mean().iloc[-1])
+        chg    = float(hist["Close"].pct_change().iloc[-1] * 100)
+        return price, sma200, chg
+    except Exception:
+        return None, None, None
+
+@st.cache_data(ttl=300, show_spinner=False)
+def get_vix_signal():
+    try:
+        hist = yf.Ticker("^VIX").history(period="5d", interval="1d")
+        if hist.empty:
+            return None
+        return float(hist["Close"].iloc[-1])
+    except Exception:
+        return None
+
+@st.cache_data(ttl=600, show_spinner=False)
+def get_stock_data(ticker: str):
+    try:
+        return yf.Ticker(ticker).history(period="300d", interval="1d")
+    except Exception:
+        return pd.DataFrame()
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def get_earnings_info(ticker: str):
+    """
+    어닝 날짜 조회 및 3일 이내 여부 판정.
+    반환: {
+        "date"      : datetime.date | None,  # 다음 어닝 날짜
+        "days_away" : int | None,            # 오늘 기준 남은 일수 (음수=이미 지남)
+        "within_3d" : bool,                  # 3일 이내 True → 진입 금지
+        "label"     : str,                   # UI 표시용 문자열
+        "source"    : str                    # 데이터 출처 ("calendar"|"fast_info"|"none")
+    }
+    """
+    today = datetime.date.today()
+    result = {
+        "date": None, "days_away": None,
+        "within_3d": False, "label": "어닝 정보 없음", "source": "none"
+    }
+    try:
+        tk = yf.Ticker(ticker)
+
+        # 방법 1: .calendar (dict 또는 DataFrame)
+        cal = tk.calendar
+        earn_date = None
+
+        if isinstance(cal, dict):
+            # yfinance ≥ 0.2.x: dict 형태
+            raw = cal.get("Earnings Date")
+            if raw:
+                if isinstance(raw, (list, tuple)) and len(raw) > 0:
+                    earn_date = pd.Timestamp(raw[0]).date()
+                elif hasattr(raw, "date"):
+                    earn_date = raw.date()
+
+        elif isinstance(cal, pd.DataFrame) and not cal.empty:
+            # 구버전: DataFrame 형태 — "Earnings Date" 행
+            if "Earnings Date" in cal.index:
+                val = cal.loc["Earnings Date"].iloc[0]
+                earn_date = pd.Timestamp(val).date()
+
+        if earn_date:
+            days_away = (earn_date - today).days
+            result.update({
+                "date": earn_date,
+                "days_away": days_away,
+                "within_3d": -1 <= days_away <= 3,
+                "label": f"{earn_date.strftime('%Y-%m-%d')} (D{days_away:+d})",
+                "source": "calendar"
+            })
+            return result
+
+        # 방법 2: fast_info 폴백
+        fi = tk.fast_info
+        if hasattr(fi, "next_earnings_date") and fi.next_earnings_date:
+            earn_date = pd.Timestamp(fi.next_earnings_date).date()
+            days_away = (earn_date - today).days
+            result.update({
+                "date": earn_date,
+                "days_away": days_away,
+                "within_3d": -1 <= days_away <= 3,
+                "label": f"{earn_date.strftime('%Y-%m-%d')} (D{days_away:+d})",
+                "source": "fast_info"
+            })
+            return result
+
+    except Exception:
+        pass
+
+    return result  # 조회 실패 시 기본값 반환
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def run_screener(sector: str, mode: str = "MOM"):
+    try:
+        from finvizfinance.screener.overview import Overview
+        if mode == "MOM":
+            filters = {
+                "200-Day Simple Moving Average": "Price above SMA200",
+                "50-Day Simple Moving Average":  "Price above SMA50",
+                "RSI (14)":                      "Not Overbought (<60)",
+                "Performance":                   "Quarter +10%",
+                "Performance 2":                 "Week Up",
+                "Change":                        "Up",
+                "Average Volume":                "Over 500K",
+                "Industry":                      "Stocks only (ex-Funds)",
+                "Price":                         "Over $10",
+            }
+        else:
+            filters = {
+                "200-Day Simple Moving Average": "Price above SMA200",
+                "RSI (14)":                      "Oversold (40)",
+                "Average Volume":                "Over 500K",
+                "Industry":                      "Stocks only (ex-Funds)",
+                "Price":                         "Over $10",
+            }
+        if sector != "전체":
+            filters["Sector"] = sector
+        fov = Overview()
+        fov.set_filter(filters_dict=filters)
+        return fov.screener_view()
+    except Exception as e:
+        return str(e)
+
+
+
+# ══════════════════════════════════════════════════════════════
+# Daily Report 전용 함수
+# ══════════════════════════════════════════════════════════════
+
+def _calc_rsi(series, period):
     delta = series.diff()
     gain = delta.where(delta > 0, 0.0)
     loss = -delta.where(delta < 0, 0.0)
@@ -34,334 +215,379 @@ def calc_rsi(series, period):
     rs = avg_gain / avg_loss.replace(0, 1e-10)
     return 100 - (100 / (1 + rs))
 
-def calc_sma(series, period):
+def _calc_sma(series, period):
     return series.rolling(window=period).mean()
 
-def calc_bollinger(series, period=20, std_mult=2):
-    sma = calc_sma(series, period)
+def _calc_bollinger(series, period=20, std_mult=2):
+    sma = _calc_sma(series, period)
     std = series.rolling(window=period).std()
     return sma, sma + std_mult * std, sma - std_mult * std
 
-def calc_atr(high, low, close, period=14):
+def _calc_atr(high, low, close, period=14):
     tr = pd.concat([high - low, (high - close.shift(1)).abs(), (low - close.shift(1)).abs()], axis=1).max(axis=1)
     return tr.ewm(alpha=1/period, min_periods=period, adjust=False).mean()
 
-def calc_rvol(volume, period=20):
+def _calc_rvol(volume, period=20):
     avg = volume.rolling(window=period).mean()
-    return float(volume.iloc[-1] / avg.iloc[-1]) if avg.iloc[-1] > 0 else 0.0
+    return float(volume.iloc[-1] / avg.iloc[-1]) if avg.iloc[-1] > 0 else 0
 
-def consec_down(close):
+def _consec_down(close):
     count = 0
     for i in range(len(close) - 1, 0, -1):
-        if close.iloc[i] < close.iloc[i - 1]: count += 1
-        else: break
+        if close.iloc[i] < close.iloc[i - 1]:
+            count += 1
+        else:
+            break
     return count
 
-# ══════════════════════════════════════════
-# 시장 데이터
-# ══════════════════════════════════════════
-def get_index_data(ticker):
-    try:
-        hist = yf.Ticker(ticker).history(period="300d", interval="1d")
-        if hist.empty or len(hist) < 200: return None, None, None
-        p = float(hist["Close"].iloc[-1])
-        s = float(hist["Close"].rolling(200).mean().iloc[-1])
-        c = float(hist["Close"].pct_change().iloc[-1] * 100)
-        return p, s, c
-    except Exception: return None, None, None
-
-def get_vix():
-    try:
-        h = yf.Ticker("^VIX").history(period="5d")
-        return float(h["Close"].iloc[-1]) if not h.empty else None
-    except Exception: return None
-
-def get_spy_rsi2():
-    try:
-        h = yf.Ticker("SPY").history(period="30d")
-        return float(calc_rsi(h["Close"], 2).iloc[-1])
-    except Exception: return None
-
-def get_earnings_info(ticker):
-    today = datetime.date.today()
-    result = {"date": None, "days_away": None, "within_3d": False, "label": "어닝 정보 없음", "source": "none"}
-    try:
-        tk = yf.Ticker(ticker); cal = tk.calendar; earn_date = None
-        if isinstance(cal, dict):
-            raw = cal.get("Earnings Date")
-            if raw:
-                if isinstance(raw, (list, tuple)) and len(raw) > 0: earn_date = pd.Timestamp(raw[0]).date()
-                elif hasattr(raw, "date"): earn_date = raw.date()
-        elif isinstance(cal, pd.DataFrame) and not cal.empty:
-            if "Earnings Date" in cal.index: earn_date = pd.Timestamp(cal.loc["Earnings Date"].iloc[0]).date()
-        if earn_date:
-            d = (earn_date - today).days
-            result.update({"date": earn_date, "days_away": d, "within_3d": -1 <= d <= 3, "label": f"{earn_date.strftime('%Y-%m-%d')} (D{d:+d})", "source": "calendar"})
-            return result
-        fi = tk.fast_info
-        if hasattr(fi, "next_earnings_date") and fi.next_earnings_date:
-            earn_date = pd.Timestamp(fi.next_earnings_date).date()
-            d = (earn_date - today).days
-            result.update({"date": earn_date, "days_away": d, "within_3d": -1 <= d <= 3, "label": f"{earn_date.strftime('%Y-%m-%d')} (D{d:+d})", "source": "fast_info"})
-            return result
-    except Exception: pass
-    return result
-
-# ══════════════════════════════════════════
-# 레짐
-# ══════════════════════════════════════════
-def get_regime(sp, ss, qp, qs):
-    if None in (sp, ss, qp, qs): return "UNKNOWN"
-    sm = (sp - ss) / ss * 100; qm = (qp - qs) / qs * 100
-    if sm >= 5 and qm >= 5: return "STRONG_BULL"
-    if sm >= 3 and qm >= 3: return "WEAK_BULL"
-    return "BEAR"
-
-def calc_margins(sp, ss, qp, qs):
-    return ((sp-ss)/ss*100 if sp and ss else -99, (qp-qs)/qs*100 if qp and qs else -99)
-
-SCORE_ORDER = {"A": 0, "B+": 1, "B-": 2, "FAIL": 3}
-SCORE_EMOJI = {"A": "🟢", "B+": "🔵", "B-": "🟡", "FAIL": "🔴"}
-REGIME_EMOJI = {"STRONG_BULL": "🟢", "WEAK_BULL": "🟡", "BEAR": "🔴", "UNKNOWN": "⚪"}
-
-# ══════════════════════════════════════════
-# Finviz
-# ══════════════════════════════════════════
-def run_finviz_screen(mode, sectors=None):
+@st.cache_data(ttl=600, show_spinner=False)
+def run_finviz_dr(mode, sectors_list):
+    """Daily Report용 Finviz 스크리닝"""
     try:
         from finvizfinance.screener.overview import Overview
+        fov = Overview()
         if mode == "MOM":
-            f = {"200-Day Simple Moving Average": "Price above SMA200", "50-Day Simple Moving Average": "Price above SMA50", "RSI (14)": "Not Overbought (<60)", "Performance": "Quarter +10%", "Average Volume": "Over 500K", "Industry": "Stocks only (ex-Funds)", "Relative Volume": "Over 1.5", "Current Volume": "Over 500K", "Price": "Over $10"}
-        else:
-            f = {"200-Day Simple Moving Average": "Price above SMA200", "RSI (14)": "Oversold (40)", "Average Volume": "Over 500K", "Industry": "Stocks only (ex-Funds)", "Relative Volume": "Under 0.75", "Price": "Over $10"}
-        if sectors and len(sectors) == 1 and sectors[0] != "전체": f["Sector"] = sectors[0]
-        fov = Overview(); fov.set_filter(filters_dict=f); df = fov.screener_view()
-        if df is None or df.empty: return []
-        if sectors and "전체" not in sectors and len(sectors) > 1 and "Sector" in df.columns:
-            df = df[df["Sector"].isin(sectors)]
-        return df["Ticker"].tolist()
-    except Exception as e: return f"오류: {e}"
-
-# ══════════════════════════════════════════
-# 종목 분석
-# ══════════════════════════════════════════
-def analyze_stock(ticker, mode, spy_rsi2_val, mom_ok, vix_ok, account_size=5000, risk_pct=1.0):
-    try:
-        df = yf.download(ticker, period="1y", progress=False)
-        if df.empty or len(df) < 200: return None
-        if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
-        close, high, low, volume = df["Close"], df["High"], df["Low"], df["Volume"]
-        price = float(close.iloc[-1])
-        sma200 = calc_sma(close, 200); sma150 = calc_sma(close, 150); sma50 = calc_sma(close, 50); sma20 = calc_sma(close, 20)
-        rsi2 = calc_rsi(close, 2); rsi14 = calc_rsi(close, 14)
-        _, _, bb_lower = calc_bollinger(close); atr = calc_atr(high, low, close)
-        rvol = calc_rvol(volume); consec = consec_down(close); earn = get_earnings_info(ticker)
-        s200 = float(sma200.iloc[-1]); s150 = float(sma150.iloc[-1]) if not pd.isna(sma150.iloc[-1]) else None
-        s50 = float(sma50.iloc[-1]); s20 = float(sma20.iloc[-1])
-        rsi2_v = float(rsi2.iloc[-1]); rsi14_v = float(rsi14.iloc[-1])
-        bb_low_v = float(bb_lower.iloc[-1]); atr_v = float(atr.iloc[-1])
-        sepa = s150 is not None and s50 > s150 > s200
-        sma200_rising = len(sma200) >= 21 and float(sma200.iloc[-1]) > float(sma200.iloc[-21])
-        h252 = df.tail(252); w52_high = float(h252["High"].max()); w52_low = float(h252["Low"].min())
-        from_high = (price - w52_high) / w52_high * 100; from_low = (price - w52_low) / w52_low * 100
-        perf_3m = ((price / float(close.iloc[-63])) - 1) * 100 if len(close) >= 63 else 0
-
-        if mode == "MR":
-            required = {"SMA200 위": price > s200, "RSI(2) ≤ 15": rsi2_v <= 15, "어닝 3일내 없음": not earn["within_3d"], "SPY RSI(2) > 10": spy_rsi2_val is not None and spy_rsi2_val > 10}
-            preferred = {"BB 하단 터치": price <= bb_low_v * 1.005, "RVOL < 1.2": rvol < 1.2, "연속 하락 3일+": consec >= 3, "VIX ≤ 25": vix_ok}
-        else:
-            required = {"시장 레짐 Bull": mom_ok, "RSI(14) 50~70": 50 <= rsi14_v <= 70, "어닝 3일내 없음": not earn["within_3d"], "SMA200 상승 중": sma200_rising}
-            preferred = {"SEPA 정렬": sepa, "RVOL ≥ 1.2": rvol >= 1.2, "3개월 +10%": perf_3m >= 10, "52주고점 -25%이내": from_high >= -25, "52주저점 +30%이상": from_low >= 30, "RSI(2) < 80": rsi2_v < 80}
-
-        req_pass = sum(required.values()); pref_pass = sum(preferred.values())
-        pref_pct = pref_pass / len(preferred) if preferred else 0
-        if req_pass < len(required): score, win_rate = "FAIL", "—"
-        elif pref_pct >= 1.0: score, win_rate = ("A", "75~82%") if mode == "MR" else ("A", "70~78%")
-        elif pref_pct >= 0.7: score, win_rate = ("B+", "68~75%") if mode == "MR" else ("B+", "63~70%")
-        else: score, win_rate = ("B-", "60~65%") if mode == "MR" else ("B-", "55~63%")
-        risk_dollar = account_size * (risk_pct / 100); shares = int(risk_dollar / atr_v) if atr_v > 0 else 0; pos_value = shares * price
-
-        return {"ticker": ticker, "price": round(price, 2), "sma200": round(s200, 2), "sma50": round(s50, 2), "sma20": round(s20, 2),
-                "rsi2": round(rsi2_v, 1), "rsi14": round(rsi14_v, 1), "rvol": round(rvol, 2), "consec": consec, "atr": round(atr_v, 2),
-                "perf_3m": round(perf_3m, 1), "sepa": sepa, "sma200_rising": sma200_rising,
-                "from_high": round(from_high, 1), "from_low": round(from_low, 1),
-                "earn_label": earn["label"], "earn_blocked": earn["within_3d"],
-                "required": required, "req_pass": req_pass, "req_total": len(required),
-                "preferred": preferred, "pref_pass": pref_pass, "pref_total": len(preferred), "pref_pct": round(pref_pct * 100),
-                "score": score, "win_rate": win_rate, "shares": shares, "pos_value": round(pos_value),
-                "pos_pct": round(pos_value / account_size * 100, 1) if account_size > 0 else 0,
-                "stop_3atr": round(price - 3 * atr_v, 2), "target_8pct": round(price * 1.08, 2)}
-    except Exception: return None
-
-def sort_results(results, mode):
-    if mode == "MR": return sorted(results, key=lambda x: (SCORE_ORDER.get(x["score"], 9), x["rsi2"]))
-    return sorted(results, key=lambda x: (SCORE_ORDER.get(x["score"], 9), -x.get("perf_3m", 0)))
-
-# ══════════════════════════════════════════
-# 보유 종목 청산 체크
-# ══════════════════════════════════════════
-def check_exit_signals(ticker, strategy, entry_price, entry_date):
-    try:
-        hdf = yf.download(ticker, period="60d", progress=False)
-        if hdf.empty or len(hdf) < 5: return None
-        if isinstance(hdf.columns, pd.MultiIndex): hdf.columns = hdf.columns.get_level_values(0)
-        c = hdf["Close"]; curr = float(c.iloc[-1]); pnl = (curr - entry_price) / entry_price * 100
-        r2 = float(calc_rsi(c, 2).iloc[-1]); r14 = float(calc_rsi(c, 14).iloc[-1])
-        a = float(calc_atr(hdf["High"], hdf["Low"], c).iloc[-1])
-        hd = (datetime.date.today() - entry_date).days; stop = entry_price - 3 * a; sigs = []
-        if strategy == "MR":
-            tp = r2 > 70; tm = hd >= 10; st_hit = curr <= stop
-            if tp: sigs.append("RSI(2)>70 익절")
-            if tm: sigs.append("10일 타임스탑")
-            if st_hit: sigs.append("3ATR 재난손절")
-        else:
-            tp = pnl >= 8.0; tm = hd >= 15; st_hit = False
-            if tp: sigs.append("+8% 익절")
-            if tm: sigs.append("15일 타임스탑")
-        return {"ticker": ticker, "curr": round(curr, 2), "pnl": round(pnl, 1), "hold_days": hd, "rsi2": round(r2, 1), "rsi14": round(r14, 1), "atr": round(a, 2), "stop_3atr": round(stop, 2), "sell_signals": sigs, "tp_hit": tp, "time_hit": tm, "stop_hit": st_hit}
-    except Exception: return None
-
-
-# ══════════════════════════════════════════════════════════
-# 추가 함수 (Daily Report & Manual Tabs 용)
-# ══════════════════════════════════════════════════════════
-
-# Daily Report용 — 기존 함수와 동일한 이름으로 래핑
-run_finviz_dr = run_finviz_screen
-analyze_stock_dr = analyze_stock
-
-def run_screener(sector, mode):
-    """Finviz screener returning DataFrame (not ticker list)"""
-    try:
-        from finvizfinance.screener.overview import Overview
-        if mode == "MOM":
-            f = {
+            filters = {
                 "200-Day Simple Moving Average": "Price above SMA200",
                 "50-Day Simple Moving Average": "Price above SMA50",
                 "RSI (14)": "Not Overbought (<60)",
                 "Performance": "Quarter +10%",
+                "Performance 2": "Week Up",
+                "Change": "Up",
                 "Average Volume": "Over 500K",
                 "Industry": "Stocks only (ex-Funds)",
                 "Relative Volume": "Over 1.5",
                 "Current Volume": "Over 500K",
-                "Price": "Over $10"
+                "Price": "Over $10",
             }
         else:
-            f = {
+            filters = {
                 "200-Day Simple Moving Average": "Price above SMA200",
                 "RSI (14)": "Oversold (40)",
                 "Average Volume": "Over 500K",
                 "Industry": "Stocks only (ex-Funds)",
-                "Relative Volume": "Under 0.75",
-                "Price": "Over $10"
+                "Price": "Over $10",
             }
-        if sector != "전체":
-            f["Sector"] = sector
-        fov = Overview()
-        fov.set_filter(filters_dict=f)
-        return fov.screener_view()
+        if sectors_list and len(sectors_list) == 1 and sectors_list[0] != "전체":
+            filters["Sector"] = sectors_list[0]
+        fov.set_filter(filters_dict=filters)
+        df = fov.screener_view()
+        if df is None or df.empty: return []
+        if sectors_list and "전체" not in sectors_list and len(sectors_list) > 1 and "Sector" in df.columns:
+            df = df[df["Sector"].isin(sectors_list)]
+        return df["Ticker"].tolist()
     except Exception as e:
-        return str(e)
+        return f"오류: {e}"
 
-def get_stock_data(ticker):
-    """Get stock history data"""
+@st.cache_data(ttl=600, show_spinner=False)
+def analyze_stock_dr(ticker, mode, spy_rsi2_val, mom_ok_val, vix_ok_val, account_sz, risk_p):
+    """Daily Report용 종목 분석 + 자동 채점"""
     try:
-        return yf.Ticker(ticker).history(period="300d", interval="1d")
-    except Exception:
-        return pd.DataFrame()
+        df = yf.download(ticker, period="1y", progress=False)
+        if df.empty or len(df) < 200: return None
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
 
-st.set_page_config(page_title="🚦 APEX 신호등", layout="centered", page_icon="🚦", initial_sidebar_state="collapsed")
-st.markdown("""<style>
-html, body, [class*="css"] { font-size: 16px; }
-.stButton > button { height: 3.5rem; font-size: 1.1rem; font-weight: bold; border-radius: 12px; }
-[data-testid="stMetric"] { background: #1E1E2E; border-radius: 12px; padding: 12px; color: #FFFFFF; }
-[data-testid="stMetric"] label, [data-testid="stMetric"] [data-testid="stMetricValue"], [data-testid="stMetric"] [data-testid="stMetricDelta"] { color: #FFFFFF !important; }
-.block-container { padding-top: 1rem; }
-</style>""", unsafe_allow_html=True)
+        close, high, lo, volume = df["Close"], df["High"], df["Low"], df["Volume"]
+        price = float(close.iloc[-1])
 
-@st.cache_data(ttl=300, show_spinner=False)
-def _ci(t): return get_index_data(t)
-@st.cache_data(ttl=300, show_spinner=False)
-def _cv(): return get_vix()
-@st.cache_data(ttl=600, show_spinner=False)
-def _cs(t):
-    try: return yf.Ticker(t).history(period="300d")
-    except: return pd.DataFrame()
-@st.cache_data(ttl=3600, show_spinner=False)
-def _ce(t): return get_earnings_info(t)
-@st.cache_data(ttl=600, show_spinner=False)
-def _cf(m, s): return run_finviz_screen(m, list(s))
-@st.cache_data(ttl=600, show_spinner=False)
-def _ca(t, m, sr, mo, vo, ac, rp): return analyze_stock(t, m, sr, mo, vo, ac, rp)
+        sma200 = _calc_sma(close, 200)
+        sma150 = _calc_sma(close, 150)
+        sma50 = _calc_sma(close, 50)
+        sma20 = _calc_sma(close, 20)
+        rsi2 = _calc_rsi(close, 2)
+        rsi14 = _calc_rsi(close, 14)
+        bb_mid, bb_upper, bb_lower = _calc_bollinger(close)
+        tr = pd.concat([high - lo, (high - close.shift(1)).abs(), (lo - close.shift(1)).abs()], axis=1).max(axis=1)
+        atr = tr.ewm(alpha=1/14, min_periods=14, adjust=False).mean()
+        rvol = _calc_rvol(volume)
+        consec = _consec_down(close)
+        earn = get_earnings_info(ticker)
 
-st.markdown("# 🚦 APEX 신호등 v3")
+        s200 = float(sma200.iloc[-1])
+        s150 = float(sma150.iloc[-1]) if not pd.isna(sma150.iloc[-1]) else None
+        s50 = float(sma50.iloc[-1])
+        s20 = float(sma20.iloc[-1])
+        rsi2_v = float(rsi2.iloc[-1])
+        rsi14_v = float(rsi14.iloc[-1])
+        bb_low_v = float(bb_lower.iloc[-1])
+        atr_v = float(atr.iloc[-1])
+
+        sepa = s150 is not None and s50 > s150 > s200
+        sma200_rising = len(sma200) >= 21 and float(sma200.iloc[-1]) > float(sma200.iloc[-21])
+
+        h252 = df.tail(252)
+        w52_high = float(h252["High"].max())
+        w52_low = float(h252["Low"].min())
+        from_high = (price - w52_high) / w52_high * 100
+        from_low = (price - w52_low) / w52_low * 100
+        perf_3m = ((price / float(close.iloc[-63])) - 1) * 100 if len(close) >= 63 else 0
+        daily_chg = ((price / float(close.iloc[-2])) - 1) * 100 if len(close) >= 2 else 0
+
+        if mode == "MR":
+            required = {
+                "SMA200 위 (종목)": price > s200,
+                "RSI(2) ≤ 15": rsi2_v <= 15,
+                "어닝 3일내 없음": not earn["within_3d"],
+                "SPY RSI(2) > 10": spy_rsi2_val > 10,
+            }
+            preferred = {
+                "BB 하단 터치": price <= bb_low_v * 1.005,
+                "RVOL < 1.2": rvol < 1.2,
+                "연속 하락 3일+": consec >= 3,
+                "VIX ≤ 25": vix_ok_val,
+            }
+        else:
+            required = {
+                "시장 레짐 Bull": mom_ok_val,
+                "RSI(14) 50~70": 50 <= rsi14_v <= 70,
+                "어닝 3일내 없음": not earn["within_3d"],
+                "SMA200 상승 중": sma200_rising,
+            }
+            preferred = {
+                "SEPA 정렬": sepa,
+                "RVOL ≥ 1.2": rvol >= 1.2,
+                "3개월 +10%": perf_3m >= 10,
+                "52주고점 -25%이내": from_high >= -25,
+                "52주저점 +30%이상": from_low >= 30,
+                "RSI(2) < 80": rsi2_v < 80,
+            }
+
+        req_pass = sum(required.values())
+        pref_pass = sum(preferred.values())
+        pref_pct = pref_pass / len(preferred) if preferred else 0
+
+        if req_pass < len(required):
+            score, win_rate = "FAIL", "—"
+        elif pref_pct >= 1.0:
+            score, win_rate = ("A", "75~82%") if mode == "MR" else ("A", "70~78%")
+        elif pref_pct >= 0.7:
+            score, win_rate = ("B+", "68~75%") if mode == "MR" else ("B+", "63~70%")
+        else:
+            score, win_rate = ("B-", "60~65%") if mode == "MR" else ("B-", "55~63%")
+
+        risk_dollar = account_sz * (risk_p / 100)
+        shares = int(risk_dollar / atr_v) if atr_v > 0 else 0
+        pos_value = shares * price
+
+        return {
+            "ticker": ticker, "price": round(price, 2),
+            "sma200": round(s200, 2), "sma50": round(s50, 2), "sma20": round(s20, 2),
+            "rsi2": round(rsi2_v, 1), "rsi14": round(rsi14_v, 1),
+            "rvol": round(rvol, 2), "consec": consec,
+            "bb_touch": price <= bb_low_v * 1.005,
+            "atr": round(atr_v, 2), "perf_3m": round(perf_3m, 1),
+            "daily_chg": round(daily_chg, 2),
+            "sepa": sepa, "sma200_rising": sma200_rising,
+            "from_high": round(from_high, 1), "from_low": round(from_low, 1),
+            "earn_label": earn["label"], "earn_blocked": earn["within_3d"],
+            "required": required, "req_pass": req_pass, "req_total": len(required),
+            "preferred": preferred, "pref_pass": pref_pass, "pref_total": len(preferred),
+            "pref_pct": round(pref_pct * 100),
+            "score": score, "win_rate": win_rate,
+            "shares": shares, "pos_value": round(pos_value),
+            "pos_pct": round(pos_value / account_sz * 100, 1) if account_sz > 0 else 0,
+        }
+    except:
+        return None
+
+
+
+# ══════════════════════════════════════════════════════════
+# ① 타이틀
+# ══════════════════════════════════════════════════════════
+st.markdown("# 🚦 APEX 시장 신호등 v2")
 st.caption("신호등 모두 초록 → 진입 / 하나라도 빨강 → 오늘 쉬기")
-if st.button("🔄 새로고침", use_container_width=True): st.cache_data.clear(); st.rerun()
+
+if st.button("🔄 신호 새로고침", use_container_width=True):
+    st.cache_data.clear()
+    st.rerun()
+
 st.divider()
 
-with st.spinner("시장 데이터..."):
-    spy_price, spy_sma200, spy_chg = _ci("SPY")
-    qqq_price, qqq_sma200, qqq_chg = _ci("QQQ")
-    vix_now = _cv()
 
-def _sig(label, price, sma200, chg):
-    if price and sma200:
-        gap = (price - sma200) / sma200 * 100; n = "📈" if chg > 0 else "📉"
-        if gap >= 3: st.success(f"**{label} 🟢** ${price:.1f} > SMA200 ${sma200:.1f} ({gap:+.1f}%) | {chg:+.2f}% {n}")
-        elif gap > 0: st.warning(f"**{label} 🟡** ${price:.1f} ({gap:+.1f}% < 3%) | {chg:+.2f}% {n}")
-        else: st.error(f"**{label} 🔴** ${price:.1f} < SMA200 ${sma200:.1f} ({gap:.1f}%) | {chg:+.2f}% {n}")
-        return gap >= 3
-    st.warning(f"**{label} ⚪**"); return False
+# ══════════════════════════════════════════════════════════
+# ② 데이터 로드
+# ══════════════════════════════════════════════════════════
+with st.spinner("시장 데이터 확인 중..."):
+    spy_price, spy_sma200, spy_chg = get_index_signal("SPY")
+    qqq_price, qqq_sma200, qqq_chg = get_index_signal("QQQ")
+    vix_now = get_vix_signal()
 
-spy_ok = _sig("① SPY", spy_price, spy_sma200, spy_chg)
-qqq_ok = _sig("① QQQ", qqq_price, qqq_sma200, qqq_chg)
 
+# ══════════════════════════════════════════════════════════
+# ③ 신호등
+# ══════════════════════════════════════════════════════════
+
+# 신호 1-A: SPY
+if spy_price and spy_sma200:
+    spy_gap = (spy_price - spy_sma200) / spy_sma200 * 100
+    spy_ok  = spy_gap >= 3  # 3% 마진 기준
+    chg_note = "📈 상승" if spy_chg > 0 else "📉 하락"
+    if spy_gap >= 3:
+        st.success(
+            f"**① 시장 추세 (SPY) 🟢 GO**\n\n"
+            f"SPY ${spy_price:.1f} > SMA200 ${spy_sma200:.1f} (**{spy_gap:+.1f}%** ≥ 3% 안전마진)\n\n"
+            f"오늘 등락: **{spy_chg:+.2f}%** {chg_note}"
+        )
+    elif spy_gap > 0:
+        st.warning(
+            f"**① 시장 추세 (SPY) 🟡 경계**\n\n"
+            f"SPY ${spy_price:.1f} > SMA200 ${spy_sma200:.1f} (**{spy_gap:+.1f}%** < 3% 안전마진 미달)\n\n"
+            f"오늘 등락: **{spy_chg:+.2f}%** {chg_note} — MOM 진입 금지 구간"
+        )
+    else:
+        st.error(
+            f"**① 시장 추세 (SPY) 🔴 주의**\n\n"
+            f"SPY ${spy_price:.1f} < SMA200 ${spy_sma200:.1f} ({spy_gap:.1f}%)\n\n"
+            f"오늘 등락: **{spy_chg:+.2f}%** {chg_note}"
+        )
+else:
+    st.warning("**① 시장 추세 (SPY) ⚪ 데이터 없음** — 새로고침 해보세요")
+    spy_ok = False
+
+# 신호 1-B: QQQ (나스닥 기술주 추세 확인용)
+if qqq_price and qqq_sma200:
+    qqq_gap = (qqq_price - qqq_sma200) / qqq_sma200 * 100
+    qqq_ok  = qqq_gap >= 3  # 3% 마진 기준
+    qqq_note = "📈 상승" if qqq_chg > 0 else "📉 하락"
+    if qqq_gap >= 3:
+        st.success(
+            f"**① 시장 추세 (QQQ) 🟢 GO**\n\n"
+            f"QQQ ${qqq_price:.1f} > SMA200 ${qqq_sma200:.1f} (**{qqq_gap:+.1f}%** ≥ 3% 안전마진)\n\n"
+            f"오늘 등락: **{qqq_chg:+.2f}%** {qqq_note}"
+        )
+    elif qqq_gap > 0:
+        st.warning(
+            f"**① 시장 추세 (QQQ) 🟡 경계**\n\n"
+            f"QQQ ${qqq_price:.1f} > SMA200 ${qqq_sma200:.1f} (**{qqq_gap:+.1f}%** < 3% 안전마진 미달)\n\n"
+            f"오늘 등락: **{qqq_chg:+.2f}%** {qqq_note} — MOM 진입 금지 구간"
+        )
+    else:
+        st.error(
+            f"**① 시장 추세 (QQQ) 🔴 주의**\n\n"
+            f"QQQ ${qqq_price:.1f} < SMA200 ${qqq_sma200:.1f} ({qqq_gap:.1f}%)\n\n"
+            f"오늘 등락: **{qqq_chg:+.2f}%** {qqq_note}"
+        )
+else:
+    st.warning("**① 시장 추세 (QQQ) ⚪ 데이터 없음**")
+    qqq_ok = False
+
+# 신호 2: VIX
 if vix_now:
-    if vix_now <= 20: vix_ok = True; st.success(f"**② VIX 🟢** {vix_now:.1f}")
-    elif vix_now <= 25: vix_ok = True; st.warning(f"**② VIX 🟡** {vix_now:.1f}")
-    else: vix_ok = False; st.error(f"**② VIX 🔴** {vix_now:.1f}")
-else: st.warning("**② VIX ⚪**"); vix_ok = False; vix_now = 0
+    if vix_now <= 15:
+        vix_ok = True
+        st.success(f"**② VIX 공포지수 🟢 매우 안정**\n\nVIX **{vix_now:.1f}** — 최적 환경")
+    elif vix_now <= 20:
+        vix_ok = True
+        st.success(f"**② VIX 공포지수 🟢 안정**\n\nVIX **{vix_now:.1f}** — 양호")
+    elif vix_now <= 25:
+        vix_ok = True
+        st.warning(f"**② VIX 공포지수 🟡 약간 불안**\n\nVIX **{vix_now:.1f}** — 포지션 줄이기")
+    else:
+        vix_ok = False
+        st.error(f"**② VIX 공포지수 🔴 공포 구간**\n\nVIX **{vix_now:.1f}** — 진입 자제")
+else:
+    st.warning("**② VIX ⚪ 데이터 없음**")
+    vix_ok = False
+    vix_now = 0
 
-st.markdown("**③ 이벤트**")
+# 신호 3: 이벤트 (수동)
+st.markdown("**③ 오늘 주요 이벤트**")
 c1, c2 = st.columns(2)
-with c1: has_fed = st.checkbox("🏦 Fed"); has_trade = st.checkbox("📢 관세")
-with c2: has_cpi = st.checkbox("📊 CPI/PPI"); has_other = st.checkbox("⚠️ 기타")
+with c1:
+    has_fed   = st.checkbox("🏦 Fed 금리")
+    has_trade = st.checkbox("📢 관세 발표")
+with c2:
+    has_cpi   = st.checkbox("📊 CPI/PPI")
+    has_other = st.checkbox("⚠️ 기타 이벤트")
+
 event_risk = has_fed or has_trade or has_cpi or has_other
-if event_risk: st.error("**이벤트 🔴**")
-else: st.success("**이벤트 🟢 없음**")
+if event_risk:
+    st.error("**이벤트 🔴 — 오늘은 쉬세요**")
+else:
+    st.success("**이벤트 🟢 없음 — 정상 매매 가능**")
+
 st.divider()
 
-vix_ok_val = vix_now is not None and vix_now <= 25
-all_green = spy_ok and qqq_ok and vix_ok_val and not event_risk
 
-def _box(e, t, s, bg):
-    c = "#00C853" if bg == "#1a4731" else "#FF5252" if bg == "#3d1a1a" else "#FFD700"
-    return f'<div style="background:{bg};border-radius:16px;padding:20px;text-align:center;margin:8px 0"><div style="font-size:3rem">{e}</div><div style="font-size:1.6rem;font-weight:bold;color:{c}">{t}</div><div style="color:#aaa;margin-top:8px">{s}</div></div>'
+# ══════════════════════════════════════════════════════════
+# ④ 최종 판정
+# ══════════════════════════════════════════════════════════
+spy_ok_val  = spy_price is not None and spy_sma200 is not None and ((spy_price - spy_sma200) / spy_sma200 * 100) >= 3
+qqq_ok_val  = qqq_price is not None and qqq_sma200 is not None and ((qqq_price - qqq_sma200) / qqq_sma200 * 100) >= 3
+vix_ok_val  = vix_now is not None and vix_now <= 25
+all_green = spy_ok_val and qqq_ok_val and vix_ok_val and not event_risk
 
-if all_green: st.markdown(_box("✅", "GO — 진입 가능", "모두 충족", "#1a4731"), unsafe_allow_html=True)
-elif event_risk: st.markdown(_box("🔴", "이벤트 주의", "내일 다시", "#3d1a1a"), unsafe_allow_html=True)
-else: st.markdown(_box("🟡", "주의", "종목별 확인", "#2d2d00"), unsafe_allow_html=True)
+# 경계 구간 판별 (SMA200 위이지만 3% 미만)
+_spy_border = spy_price is not None and spy_sma200 is not None and spy_price > spy_sma200 and not spy_ok_val
+_qqq_border = qqq_price is not None and qqq_sma200 is not None and qqq_price > qqq_sma200 and not qqq_ok_val
+_is_border = (_spy_border or _qqq_border) and vix_ok_val and not event_risk
+
+if all_green:
+    st.markdown("""
+    <div style="background:#1a4731;border-radius:16px;padding:20px;text-align:center;margin:8px 0">
+        <div style="font-size:3rem">✅</div>
+        <div style="font-size:1.6rem;font-weight:bold;color:#00C853">GO — 진입 가능</div>
+        <div style="color:#aaa;margin-top:8px">SPY·QQQ·VIX·이벤트 모두 충족</div>
+    </div>
+    """, unsafe_allow_html=True)
+elif event_risk:
+    st.markdown("""
+    <div style="background:#3d1a1a;border-radius:16px;padding:20px;text-align:center;margin:8px 0">
+        <div style="font-size:3rem">🔴</div>
+        <div style="font-size:1.6rem;font-weight:bold;color:#FF5252">이벤트 주의</div>
+        <div style="color:#aaa;margin-top:8px">내일 다시 확인하세요</div>
+    </div>
+    """, unsafe_allow_html=True)
+elif _is_border:
+    st.markdown("""
+    <div style="background:#2d2d00;border-radius:16px;padding:20px;text-align:center;margin:8px 0">
+        <div style="font-size:3rem">🟡</div>
+        <div style="font-size:1.6rem;font-weight:bold;color:#FFD700">경계 구간 — MR만 가능</div>
+        <div style="color:#aaa;margin-top:8px">SPY/QQQ SMA200 위이나 3% 안전마진 미달 → MOM 금지</div>
+    </div>
+    """, unsafe_allow_html=True)
+elif not spy_ok_val or not qqq_ok_val:
+    idx_warn = []
+    if not spy_ok_val: idx_warn.append("SPY")
+    if not qqq_ok_val: idx_warn.append("QQQ")
+    st.markdown(f"""
+    <div style="background:#2d2d00;border-radius:16px;padding:20px;text-align:center;margin:8px 0">
+        <div style="font-size:3rem">🟡</div>
+        <div style="font-size:1.6rem;font-weight:bold;color:#FFD700">{"/".join(idx_warn)} 주의</div>
+        <div style="color:#aaa;margin-top:8px">스캔 가능 — 종목별 SMA200 확인 필수</div>
+    </div>
+    """, unsafe_allow_html=True)
+else:
+    st.markdown("""
+    <div style="background:#2d2d00;border-radius:16px;padding:20px;text-align:center;margin:8px 0">
+        <div style="font-size:3rem">🟡</div>
+        <div style="font-size:1.6rem;font-weight:bold;color:#FFD700">VIX 주의</div>
+        <div style="color:#aaa;margin-top:8px">포지션 50% 줄이고 진입</div>
+    </div>
+    """, unsafe_allow_html=True)
+
 st.divider()
 
-_spy_rsi2 = get_spy_rsi2()
-_sm, _qm = calc_margins(spy_price, spy_sma200, qqq_price, qqq_sma200)
-_regime = get_regime(spy_price, spy_sma200, qqq_price, qqq_sma200)
-_mom_ok = _regime in ["STRONG_BULL", "WEAK_BULL"]
-_mr_ok = _spy_rsi2 is not None and _spy_rsi2 > 10
-_vix_ok = vix_now is not None and vix_now <= 25
+# ══════════════════════════════════════════════════════════════
+# 탭 분리: Daily Report vs 수동 분석
+# ══════════════════════════════════════════════════════════════
 
-# Aliases for manual tab reference
-spy_ok_val = spy_ok
-qqq_ok_val = qqq_ok
+# SPY RSI(2) 계산 (Daily Report용)
+_spy_hist_dr = yf.Ticker("SPY").history(period="30d", interval="1d")
+_spy_d2 = _spy_hist_dr["Close"].diff()
+_spy_g2 = _spy_d2.clip(lower=0).ewm(alpha=1/2, min_periods=2, adjust=False).mean()
+_spy_l2 = (-_spy_d2.clip(upper=0)).ewm(alpha=1/2, min_periods=2, adjust=False).mean()
+_spy_rsi2_dr = float((100 - 100/(1 + _spy_g2/_spy_l2.replace(0, 1e-10))).iloc[-1])
 
-if _spy_rsi2 is not None and _spy_rsi2 <= 10:
-    st.error(f"⛔ SPY RSI(2) {_spy_rsi2:.1f} ≤ 10")
-st.divider()
+# 레짐 판단 (안전마진 적용)
+_spy_margin_dr = ((spy_price - spy_sma200) / spy_sma200 * 100) if (spy_price and spy_sma200) else -99
+_qqq_margin_dr = ((qqq_price - qqq_sma200) / qqq_sma200 * 100) if (qqq_price and qqq_sma200) else -99
 
-# Regime calculations for Daily Report tab
-_spy_margin_dr = _sm
-_qqq_margin_dr = _qm
-_spy_rsi2_dr = _spy_rsi2 if _spy_rsi2 is not None else 0
+# STRONG_BULL: SPY & QQQ 모두 SMA200 위 5% 이상
+# WEAK_BULL:   SPY & QQQ 모두 SMA200 위 3% 이상
+# BEAR:        그 외 (경계구간 포함)
 if _spy_margin_dr >= 5 and _qqq_margin_dr >= 5:
     _regime_dr = "STRONG_BULL"
 elif _spy_margin_dr >= 3 and _qqq_margin_dr >= 3:
@@ -375,6 +601,8 @@ _vix_ok_dr = vix_now is not None and vix_now <= 25
 # SPY RSI(2) ≤ 10 경고
 if _spy_rsi2_dr <= 10:
     st.error(f"⛔ SPY RSI(2) = {_spy_rsi2_dr:.1f} ≤ 10 — 시장 패닉, MR도 진입 금지")
+
+st.divider()
 
 tab_report, tab_manual, tab_hold = st.tabs(["📊 Daily Report (자동)", "🚦 신호등 + 수동 분석", "📌 보유 종목 모니터"])
 
@@ -446,7 +674,9 @@ with tab_report:
                             prog.progress((i+1)/len(tickers))
                         prog.empty()
                         so = {"A":0,"B+":1,"B-":2,"FAIL":3}
-                        results.sort(key=lambda x: (so.get(x["score"],9), x["rsi2"]))
+                        # MR: 당일 -5% 이상 급락 제외 + 반등 시작 종목 우선
+                        results = [r for r in results if r.get("daily_chg", 0) > -5]
+                        results.sort(key=lambda x: (so.get(x["score"],9), -x.get("daily_chg", 0)))
                         st.session_state["dr_mr"] = results
 
             if "dr_mr" in st.session_state and st.session_state["dr_mr"]:
@@ -458,12 +688,12 @@ with tab_report:
                     emj = {"A":"🟢","B+":"🔵","B-":"🟡","FAIL":"🔴"}.get(r["score"],"⚪")
                     with st.expander(
                         f"{emj} **{r['ticker']}** ${r['price']} — [{r['score']}] 승률 {r['win_rate']}"
-                        f"  |  RSI2:{r['rsi2']}  RVOL:{r['rvol']}  연속↓:{r['consec']}일"
+                        f"  |  RSI2:{r['rsi2']}  RVOL:{r['rvol']}  당일:{r['daily_chg']:+.1f}%  연속↓:{r['consec']}일"
                     ):
                         m1,m2,m3,m4 = st.columns(4)
                         with m1: st.metric("RSI(2)", f"{r['rsi2']}", "≤15 ✓" if r['rsi2']<=15 else ">15 ✗")
                         with m2: st.metric("RVOL", f"{r['rvol']}x")
-                        with m3: st.metric("ATR", f"${r['atr']}")
+                        with m3: st.metric("당일", f"{r['daily_chg']:+.1f}%")
                         with m4: st.metric("연속↓", f"{r['consec']}일")
 
                         ch1, ch2 = st.columns(2)
@@ -508,7 +738,9 @@ with tab_report:
                             prog.progress((i+1)/len(tickers))
                         prog.empty()
                         so = {"A":0,"B+":1,"B-":2,"FAIL":3}
-                        results.sort(key=lambda x: (so.get(x["score"],9), -x.get("perf_3m",0)))
+                        # MOM: 당일 하락 종목 제외 + 오늘 가장 강한 종목 우선
+                        results = [r for r in results if r.get("daily_chg", 0) > 0]
+                        results.sort(key=lambda x: (so.get(x["score"],9), -x.get("daily_chg", 0)))
                         st.session_state["dr_mom"] = results
 
             if "dr_mom" in st.session_state and st.session_state["dr_mom"]:
@@ -520,13 +752,13 @@ with tab_report:
                     emj = {"A":"🟢","B+":"🔵","B-":"🟡","FAIL":"🔴"}.get(r["score"],"⚪")
                     with st.expander(
                         f"{emj} **{r['ticker']}** ${r['price']} — [{r['score']}] 승률 {r['win_rate']}"
-                        f"  |  RSI14:{r['rsi14']}  RVOL:{r['rvol']}  3M:+{r['perf_3m']}%"
+                        f"  |  RSI14:{r['rsi14']}  RVOL:{r['rvol']}  당일:{r['daily_chg']:+.1f}%  3M:+{r['perf_3m']}%"
                     ):
                         m1,m2,m3,m4 = st.columns(4)
                         with m1: st.metric("RSI(14)", f"{r['rsi14']}")
                         with m2: st.metric("RVOL", f"{r['rvol']}x")
-                        with m3: st.metric("3M", f"+{r['perf_3m']}%")
-                        with m4: st.metric("52주고점", f"{r['from_high']}%")
+                        with m3: st.metric("당일", f"{r['daily_chg']:+.1f}%")
+                        with m4: st.metric("3M", f"+{r['perf_3m']}%")
 
                         ch1, ch2 = st.columns(2)
                         with ch1:
@@ -587,7 +819,7 @@ with tab_manual:
     # ⑤ 종목 스캐너
     # ══════════════════════════════════════════════════════════
     st.markdown("## 🔍 종목 스캔")
-    st.caption("MOM: SMA200위+SMA50위+RSI<60+분기+10%+거래량500K+ | MR: SMA200위+RSI(14)<40+거래량500K+")
+    st.caption("MOM: SMA200위+SMA50위+RSI<60+분기+10%+주간상승+당일상승+거래량500K+ | MR: SMA200위+RSI(14)<40+거래량500K+")
 
     # 전략 선택 — RVOL 기준이 MOM/MR에 따라 달라짐
     strategy_mode = st.radio(
@@ -1618,5 +1850,4 @@ with tab_hold:
     """, unsafe_allow_html=True)
 
             except Exception as e:
-                st.error(f"❌ 오류: {e}")          
-
+                st.error(f"❌ 오류: {e}")
