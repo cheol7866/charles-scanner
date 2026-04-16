@@ -67,10 +67,6 @@ def get_finviz_tickers(sector):
         filters = {
             "RSI (14)":                     "Oversold (30)",
             "50-Day Simple Moving Average": "Price above SMA50",
-            "Average Volume":               "Over 500K",
-            "Market Cap.":                  "+Large (over $10bln)",
-            "Industry":                     "Stocks only (ex-Funds)",
-            "Price":                        "Over $10",
         }
         if sector and sector != "전체":
             filters["Sector"] = sector
@@ -170,7 +166,7 @@ def analyze_stock(ticker):
 
 # ══════ 헤더 ══════
 st.markdown("# 📡 APEX 6.0 — RSI30 + SMA50 버티기")
-st.caption("RSI(14) ≤ 30 과매도 + 50일선 위에서 버티는 종목 | 시가총액 $10B 이상")
+st.caption("RSI(14) ≤ 30 과매도 + 50일선 위에서 버티는 종목")
 
 if st.button("🔄 새로고침", use_container_width=True):
     st.cache_data.clear()
@@ -199,7 +195,7 @@ tab_scan, tab_hold = st.tabs(["🔍 종목 스캔", "📌 보유 모니터"])
 # ══════ TAB 1: 스캔 ══════
 with tab_scan:
     st.markdown("### 🔍 RSI30 + SMA50 버티기 스캔")
-    st.info("① RSI(14) ≤ 30 (과매도) + ② SMA50 위 버티기 + ③ 시가총액 $10B 이상")
+    st.info("① RSI(14) ≤ 30 (과매도) + ② SMA50 위 버티기")
 
     sector = st.selectbox("섹터", ["전체","Technology","Healthcare","Industrials",
                                     "Consumer Cyclical","Financial","Energy",
