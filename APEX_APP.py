@@ -68,7 +68,7 @@ def get_finviz_tickers(sector):
             "RSI (14)":                     "Oversold (30)",
             "50-Day Simple Moving Average": "Price above SMA50",
             "Average Volume":               "Over 500K",
-            "Market Cap.":                  "Large (over $10bln)",
+            "Market Cap.":                  "+Large (over $10bln)",
             "Industry":                     "Stocks only (ex-Funds)",
             "Price":                        "Over $10",
         }
