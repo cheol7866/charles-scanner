@@ -1,303 +1,301 @@
 """
-APEX MR Strategy — 과매도 구간 포착 및 반등 매수 전략
-======================================================
-조건:
-  1) RSI(14) ≤ 30 진입 후 30 상향 돌파 (RSI Cross-Up)
-  2) 주가가 볼린저 밴드 하단선 이하 또는 근접 (허용 오차: BB 폭의 2%)
-  3) 상승 다이버전스 (Bullish Divergence): 가격 저점 하락 + RSI 저점 상승
+============================================================
+  진입 신호 스캐너 (Signal Scanner)
+  ----------------------------------------------------------
+  여러 기술적 지표를 조합해 매수/매도 시그널을 자동 탐지합니다.
 
-Author  : APEX System / Charles Jung
-Date    : 2026-04-17
-Requires: yfinance, pandas_ta, pandas, numpy
+  사용 라이브러리: bukosabino/ta (MIT License)
+  데이터 소스: yfinance (Yahoo Finance)
+
+  실행 방법:
+    python signal_scanner.py
+
+  필수 패키지 설치:
+    pip install yfinance ta pandas numpy
+============================================================
 """
 
-import warnings
-warnings.filterwarnings("ignore")
-
 import sys
-import numpy as np
+import warnings
+warnings.filterwarnings('ignore')
+
 import pandas as pd
-import pandas_ta as ta
+import numpy as np
+import yfinance as yf
 
-# ─────────────────────────────────────────────
-# 0. 설정값 (상단에서 한 번에 관리)
-# ─────────────────────────────────────────────
-CONFIG = {
-    "tickers"           : ["AAPL", "MSFT", "NVDA", "TSLA", "META"],
-    "period"            : "1y",          # yfinance 다운로드 기간
-    "rsi_period"        : 14,
-    "bb_period"         : 20,
-    "bb_std"            : 2.0,
-    "rsi_oversold"      : 30,            # RSI 과매도 기준선
-    "bb_proximity_pct"  : 0.02,          # BB 하단 근접 허용 오차 (2%)
-    "div_lookback"      : 14,            # 다이버전스 감지 lookback 기간(봉)
-    "div_rsi_min_rise"  : 2.0,           # 다이버전스 RSI 최소 상승폭
-}
+from ta.momentum import RSIIndicator, StochasticOscillator
+from ta.trend import SMAIndicator, EMAIndicator, MACD, ADXIndicator
+from ta.volatility import BollingerBands, AverageTrueRange
+from ta.volume import OnBalanceVolumeIndicator
 
-# ─────────────────────────────────────────────
-# 1. 데이터 다운로드
-# ─────────────────────────────────────────────
-def download_data(ticker: str, period: str) -> pd.DataFrame:
-    """
-    yfinance로 OHLCV 데이터 다운로드.
-    멀티-레벨 컬럼을 단일 레벨로 정규화하고, 결측치 처리 후 반환.
-    """
-    try:
-        import yfinance as yf
-        raw = yf.download(ticker, period=period, progress=False, auto_adjust=True)
-    except ImportError:
-        raise SystemExit("[ERROR] yfinance가 설치되지 않았습니다. pip install yfinance")
-    except Exception as e:
-        raise RuntimeError(f"[ERROR] {ticker} 다운로드 실패: {e}")
 
-    if raw.empty:
-        raise ValueError(f"[WARN] {ticker}: 수신된 데이터가 없습니다.")
+# ============================================================
+#  1. 데이터 수집
+# ============================================================
+def fetch_data(ticker: str, period: str = "1y") -> pd.DataFrame:
+    """yfinance로 OHLCV 데이터를 가져옵니다."""
+    print(f"\n[{ticker}] 데이터 수집 중...")
+    df = yf.download(ticker, period=period, progress=False, auto_adjust=True)
 
-    # ── 멀티-레벨 컬럼 평탄화 (yfinance ≥0.2.x 대응)
-    if isinstance(raw.columns, pd.MultiIndex):
-        raw.columns = raw.columns.get_level_values(0)
+    if df.empty:
+        print(f"  ERROR: {ticker} 데이터를 가져올 수 없습니다.")
+        return None
 
-    # ── 필수 컬럼 확인
-    required = {"Open", "High", "Low", "Close", "Volume"}
-    missing = required - set(raw.columns)
-    if missing:
-        raise ValueError(f"[ERROR] {ticker}: 누락 컬럼 {missing}")
+    # yfinance 최신 버전은 MultiIndex 컬럼을 반환 → 단일 레벨로 평탄화
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.get_level_values(0)
 
-    df = raw[list(required)].copy()
+    df = df.dropna()
+    print(f"  [OK] {len(df)}개 봉 수집 완료 (기간: {df.index[0].date()} ~ {df.index[-1].date()})")
+    return df
 
-    # ── 인덱스 정렬 & 결측치 처리
-    df = df.sort_index()
-    df = df.dropna(subset=["Close", "High", "Low"])   # 가격 결측 행 제거
-    df["Volume"] = df["Volume"].fillna(0)
 
-    if len(df) < 60:
-        raise ValueError(f"[WARN] {ticker}: 데이터가 부족합니다 ({len(df)}봉 < 60봉).")
+# ============================================================
+#  2. 지표 계산 (ta 라이브러리 활용)
+# ============================================================
+def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
+    """주요 기술적 지표를 계산해 컬럼으로 추가합니다."""
+    close, high, low, volume = df['Close'], df['High'], df['Low'], df['Volume']
+
+    # 추세 (Trend)
+    df['SMA20']  = SMAIndicator(close=close, window=20).sma_indicator()
+    df['SMA50']  = SMAIndicator(close=close, window=50).sma_indicator()
+    df['SMA200'] = SMAIndicator(close=close, window=200).sma_indicator()
+    df['EMA12']  = EMAIndicator(close=close, window=12).ema_indicator()
+    df['EMA26']  = EMAIndicator(close=close, window=26).ema_indicator()
+
+    # MACD
+    macd = MACD(close=close, window_slow=26, window_fast=12, window_sign=9)
+    df['MACD']        = macd.macd()
+    df['MACD_signal'] = macd.macd_signal()
+    df['MACD_diff']   = macd.macd_diff()
+
+    # 모멘텀 (Momentum)
+    df['RSI14'] = RSIIndicator(close=close, window=14).rsi()
+    df['RSI2']  = RSIIndicator(close=close, window=2).rsi()
+    stoch = StochasticOscillator(high=high, low=low, close=close, window=14, smooth_window=3)
+    df['Stoch_K'] = stoch.stoch()
+    df['Stoch_D'] = stoch.stoch_signal()
+
+    # 변동성 (Volatility)
+    bb = BollingerBands(close=close, window=20, window_dev=2)
+    df['BB_upper']  = bb.bollinger_hband()
+    df['BB_middle'] = bb.bollinger_mavg()
+    df['BB_lower']  = bb.bollinger_lband()
+    df['BB_pband']  = bb.bollinger_pband()  # %B (0~1 정규화)
+    df['ATR14']     = AverageTrueRange(high=high, low=low, close=close, window=14).average_true_range()
+
+    # 추세 강도 (ADX)
+    adx = ADXIndicator(high=high, low=low, close=close, window=14)
+    df['ADX']     = adx.adx()
+    df['ADX_pos'] = adx.adx_pos()
+    df['ADX_neg'] = adx.adx_neg()
+
+    # 거래량
+    df['OBV']     = OnBalanceVolumeIndicator(close=close, volume=volume).on_balance_volume()
+    df['Vol_MA20'] = volume.rolling(20).mean()
+    df['RVOL']    = volume / df['Vol_MA20']  # 상대 거래량
 
     return df
 
 
-# ─────────────────────────────────────────────
-# 2. 기술 지표 계산
-# ─────────────────────────────────────────────
-def compute_indicators(df: pd.DataFrame, cfg: dict) -> pd.DataFrame:
-    """
-    RSI, 볼린저 밴드 계산 (pandas_ta 사용).
-    충분한 데이터가 없을 경우 ValueError를 발생시킨다.
-    """
-    min_required = max(cfg["rsi_period"], cfg["bb_period"]) * 3
-    if len(df) < min_required:
-        raise ValueError(f"지표 계산에 필요한 최소 데이터({min_required}봉)가 부족합니다.")
+# ============================================================
+#  3. 시그널 탐지 로직
+# ============================================================
+def detect_signals(df: pd.DataFrame) -> pd.DataFrame:
+    """각 봉마다 매수/매도 시그널 조건을 평가합니다."""
 
-    # RSI
-    df["RSI"] = ta.rsi(df["Close"], length=cfg["rsi_period"])
-
-    # 볼린저 밴드
-    bb = ta.bbands(
-        df["Close"],
-        length=cfg["bb_period"],
-        std=cfg["bb_std"]
+    # ---------- 매수 시그널 (BUY) ----------
+    # [BUY-1] 골든크로스 (SMA50이 SMA200을 상향 돌파)
+    df['BUY_golden_cross'] = (
+        (df['SMA50'] > df['SMA200']) &
+        (df['SMA50'].shift(1) <= df['SMA200'].shift(1))
     )
-    # pandas_ta bbands 컬럼명 예시: BBL_20_2.0, BBM_20_2.0, BBU_20_2.0, BBB_20_2.0
-    bb_cols = bb.columns.tolist()
-    lower_col = [c for c in bb_cols if c.startswith("BBL")][0]
-    upper_col = [c for c in bb_cols if c.startswith("BBU")][0]
-    mid_col   = [c for c in bb_cols if c.startswith("BBM")][0]
 
-    df["BB_Lower"] = bb[lower_col]
-    df["BB_Upper"] = bb[upper_col]
-    df["BB_Mid"]   = bb[mid_col]
-    df["BB_Width"] = df["BB_Upper"] - df["BB_Lower"]   # 변동성 척도
+    # [BUY-2] MACD 상향 돌파 (MACD선이 Signal선 위로)
+    df['BUY_macd_cross'] = (
+        (df['MACD'] > df['MACD_signal']) &
+        (df['MACD'].shift(1) <= df['MACD_signal'].shift(1))
+    )
 
-    # 지표 계산 구간 NaN 제거
-    df = df.dropna(subset=["RSI", "BB_Lower", "BB_Upper"])
+    # [BUY-3] RSI 과매도 반등 (RSI14가 30 밑에서 위로 돌파)
+    df['BUY_rsi_oversold'] = (
+        (df['RSI14'] > 30) &
+        (df['RSI14'].shift(1) <= 30)
+    )
 
-    return df
+    # [BUY-4] 볼린저 밴드 하단 터치 후 복귀 + 거래량 증가
+    df['BUY_bb_bounce'] = (
+        (df['Close'].shift(1) < df['BB_lower'].shift(1)) &
+        (df['Close'] > df['BB_lower']) &
+        (df['RVOL'] > 1.2)
+    )
 
+    # [BUY-5] 강한 상승 추세 초입 (ADX > 25, +DI > -DI, 추세 가속)
+    df['BUY_adx_trend'] = (
+        (df['ADX'] > 25) &
+        (df['ADX_pos'] > df['ADX_neg']) &
+        (df['ADX'] > df['ADX'].shift(1)) &
+        (df['Close'] > df['SMA50'])
+    )
 
-# ─────────────────────────────────────────────
-# 3. 필터 1 — RSI 30 상향 돌파
-# ─────────────────────────────────────────────
-def filter_rsi_crossup(df: pd.DataFrame, oversold: int = 30) -> pd.Series:
-    """
-    RSI가 전봉에 ≤ oversold 이고 현봉에 > oversold 인 날 True.
-    즉, 과매도 구간에서 벗어나는 첫 번째 봉만 포착.
-    """
-    prev_rsi = df["RSI"].shift(1)
-    signal   = (prev_rsi <= oversold) & (df["RSI"] > oversold)
-    return signal.rename("RSI_CrossUp")
+    # ---------- 매도 시그널 (SELL) ----------
+    # [SELL-1] 데드크로스
+    df['SELL_dead_cross'] = (
+        (df['SMA50'] < df['SMA200']) &
+        (df['SMA50'].shift(1) >= df['SMA200'].shift(1))
+    )
 
+    # [SELL-2] MACD 하향 돌파
+    df['SELL_macd_cross'] = (
+        (df['MACD'] < df['MACD_signal']) &
+        (df['MACD'].shift(1) >= df['MACD_signal'].shift(1))
+    )
 
-# ─────────────────────────────────────────────
-# 4. 필터 2 — 볼린저 밴드 하단 근접
-# ─────────────────────────────────────────────
-def filter_bb_proximity(df: pd.DataFrame, proximity_pct: float = 0.02) -> pd.Series:
-    """
-    Close ≤ BB_Lower * (1 + proximity_pct) 이면 True.
-    proximity_pct = 0.02 → BB 하단 대비 2% 이내까지 허용.
-    """
-    threshold = df["BB_Lower"] * (1 + proximity_pct)
-    signal    = df["Close"] <= threshold
-    return signal.rename("Near_BB_Lower")
+    # [SELL-3] RSI 과매수 이탈
+    df['SELL_rsi_overbought'] = (
+        (df['RSI14'] < 70) &
+        (df['RSI14'].shift(1) >= 70)
+    )
 
+    # [SELL-4] 볼린저 상단 이탈 후 반락
+    df['SELL_bb_rejection'] = (
+        (df['Close'].shift(1) > df['BB_upper'].shift(1)) &
+        (df['Close'] < df['BB_upper'])
+    )
 
-# ─────────────────────────────────────────────
-# 5. 필터 3 — 상승 다이버전스 (Bullish Divergence)
-# ─────────────────────────────────────────────
-def filter_bullish_divergence(
-    df: pd.DataFrame,
-    lookback: int = 14,
-    rsi_min_rise: float = 2.0
-) -> pd.Series:
-    """
-    현재 봉 기준 lookback 기간 내에서:
-      - Close 저점이 이전 저점보다 낮고 (가격 하락)
-      - RSI  저점이 이전 저점보다 높으면 (RSI 상승)
-    → 상승 다이버전스 조건 충족 → True 반환
-
-    알고리즘:
-      현봉의 RSI, Close와 과거 lookback 기간 내 최저 RSI/Close를 비교.
-      단순 슬라이딩 윈도우 방식 (신호 감도와 계산 효율의 균형).
-    """
-    result = pd.Series(False, index=df.index, name="Bullish_Div")
-
-    close = df["Close"].values
-    rsi   = df["RSI"].values
-    idx   = df.index
-
-    for i in range(lookback, len(df)):
-        window_close = close[i - lookback : i]
-        window_rsi   = rsi[i - lookback : i]
-
-        prev_close_low = np.min(window_close)
-        prev_rsi_low   = np.min(window_rsi)
-
-        cur_close = close[i]
-        cur_rsi   = rsi[i]
-
-        price_lower = cur_close < prev_close_low          # 가격: 신저점
-        rsi_higher  = cur_rsi   > prev_rsi_low + rsi_min_rise  # RSI: 저점 상승
-
-        if price_lower and rsi_higher:
-            result.iloc[i] = True
-
-    return result
-
-
-# ─────────────────────────────────────────────
-# 6. 신호 통합 & 출력 데이터프레임 생성
-# ─────────────────────────────────────────────
-def generate_signals(df: pd.DataFrame, cfg: dict) -> pd.DataFrame:
-    """
-    세 가지 필터를 AND 조건으로 결합하여 최종 매수 신호를 생성.
-    """
-    df = df.copy()
-
-    # 필터 적용
-    df["RSI_CrossUp"]   = filter_rsi_crossup(df, cfg["rsi_oversold"])
-    df["Near_BB_Lower"] = filter_bb_proximity(df, cfg["bb_proximity_pct"])
-    df["Bullish_Div"]   = filter_bullish_divergence(
-                              df, cfg["div_lookback"], cfg["div_rsi_min_rise"]
-                          )
-
-    # 최종 신호: 세 조건 모두 충족
-    df["BUY_SIGNAL"] = df["RSI_CrossUp"] & df["Near_BB_Lower"] & df["Bullish_Div"]
+    # ---------- 종합 점수 (Composite Score) ----------
+    buy_cols  = [c for c in df.columns if c.startswith('BUY_')]
+    sell_cols = [c for c in df.columns if c.startswith('SELL_')]
+    df['BUY_score']  = df[buy_cols].sum(axis=1)
+    df['SELL_score'] = df[sell_cols].sum(axis=1)
+    df['NET_score']  = df['BUY_score'] - df['SELL_score']
 
     return df
 
 
-# ─────────────────────────────────────────────
-# 7. 결과 포맷팅
-# ─────────────────────────────────────────────
-def extract_signal_rows(ticker: str, df: pd.DataFrame) -> pd.DataFrame:
-    """
-    BUY_SIGNAL == True 인 행만 추출하여 가독성 좋은 DataFrame 반환.
-    """
-    cols = ["Close", "RSI", "BB_Lower", "BB_Width",
-            "RSI_CrossUp", "Near_BB_Lower", "Bullish_Div", "BUY_SIGNAL"]
-    signals = df.loc[df["BUY_SIGNAL"], cols].copy()
+# ============================================================
+#  4. 결과 출력
+# ============================================================
+def print_latest_status(df: pd.DataFrame, ticker: str):
+    """가장 최근 봉의 상태를 요약 출력합니다."""
+    latest = df.iloc[-1]
 
-    if signals.empty:
-        return signals
+    print("\n" + "=" * 60)
+    print(f"  [{ticker}] 최신 스냅샷 ({df.index[-1].date()})")
+    print("=" * 60)
+    print(f"  종가:       ${latest['Close']:,.2f}")
+    print(f"  RSI(14):    {latest['RSI14']:.1f}")
+    print(f"  RSI(2):     {latest['RSI2']:.1f}")
+    print(f"  ADX:        {latest['ADX']:.1f}  (+DI {latest['ADX_pos']:.1f} / -DI {latest['ADX_neg']:.1f})")
+    print(f"  BB %B:      {latest['BB_pband']:.2f}  (0=하단, 1=상단)")
+    print(f"  ATR(14):    ${latest['ATR14']:.2f}  ({latest['ATR14']/latest['Close']*100:.1f}% of price)")
+    print(f"  RVOL:       {latest['RVOL']:.2f}x")
 
-    signals.insert(0, "Ticker", ticker)
-    signals.index.name = "Date"
-
-    # 수치 반올림
-    for col in ["Close", "RSI", "BB_Lower", "BB_Width"]:
-        signals[col] = signals[col].round(2)
-
-    return signals
+    # 추세 판정
+    trend = "UPTREND" if latest['Close'] > latest['SMA200'] else "DOWNTREND"
+    above_50 = "YES" if latest['Close'] > latest['SMA50'] else "NO"
+    print(f"  추세:       {trend} (SMA200 기준) / SMA50 위: {above_50}")
 
 
-# ─────────────────────────────────────────────
-# 8. 메인 실행 루프
-# ─────────────────────────────────────────────
-def run_strategy(cfg: dict) -> pd.DataFrame:
-    all_results = []
+def print_recent_signals(df: pd.DataFrame, ticker: str, lookback: int = 30):
+    """최근 N일 내 발생한 시그널을 리스팅합니다."""
+    recent = df.iloc[-lookback:].copy()
 
-    for ticker in cfg["tickers"]:
-        print(f"\n{'─'*50}")
-        print(f"  Processing: {ticker}")
-        print(f"{'─'*50}")
+    buy_cols  = [c for c in df.columns if c.startswith('BUY_')]
+    sell_cols = [c for c in df.columns if c.startswith('SELL_')]
+
+    print("\n" + "=" * 60)
+    print(f"  [{ticker}] 최근 {lookback}일 시그널 발생 기록")
+    print("=" * 60)
+
+    events = []
+    for date, row in recent.iterrows():
+        for col in buy_cols:
+            if row[col]:
+                events.append((date.date(), 'BUY', col.replace('BUY_', ''), row['Close']))
+        for col in sell_cols:
+            if row[col]:
+                events.append((date.date(), 'SELL', col.replace('SELL_', ''), row['Close']))
+
+    if not events:
+        print("  (발생한 시그널 없음)")
+        return
+
+    for date, side, name, price in events:
+        marker = "[BUY ]" if side == 'BUY' else "[SELL]"
+        print(f"  {date} {marker} {name:25s}  @ ${price:,.2f}")
+
+
+def print_current_signal_strength(df: pd.DataFrame, ticker: str):
+    """가장 최근 봉의 시그널 강도를 표시합니다."""
+    latest = df.iloc[-1]
+
+    print("\n" + "=" * 60)
+    print(f"  [{ticker}] 오늘의 시그널 점수")
+    print("=" * 60)
+    print(f"  매수 점수 (BUY):   {int(latest['BUY_score'])} / 5")
+    print(f"  매도 점수 (SELL):  {int(latest['SELL_score'])} / 4")
+    print(f"  순 점수 (NET):     {int(latest['NET_score']):+d}")
+
+    # 활성화된 시그널 나열
+    active_buys  = [c.replace('BUY_','')  for c in df.columns if c.startswith('BUY_')  and latest[c]]
+    active_sells = [c.replace('SELL_','') for c in df.columns if c.startswith('SELL_') and latest[c]]
+
+    if active_buys:
+        print(f"\n  [활성 매수 시그널]")
+        for s in active_buys:
+            print(f"    - {s}")
+    if active_sells:
+        print(f"\n  [활성 매도 시그널]")
+        for s in active_sells:
+            print(f"    - {s}")
+    if not active_buys and not active_sells:
+        print("\n  (오늘 활성화된 시그널 없음 - 관망)")
+
+
+# ============================================================
+#  5. 메인 실행 루프
+# ============================================================
+def scan_ticker(ticker: str, period: str = "1y"):
+    """단일 티커 전체 스캔 파이프라인."""
+    df = fetch_data(ticker, period=period)
+    if df is None or len(df) < 200:
+        print(f"  [SKIP] 데이터 부족 (최소 200봉 필요)")
+        return
+
+    df = compute_indicators(df)
+    df = detect_signals(df)
+
+    print_latest_status(df, ticker)
+    print_current_signal_strength(df, ticker)
+    print_recent_signals(df, ticker, lookback=30)
+
+
+def main():
+    print("=" * 60)
+    print("         진입 신호 스캐너 (Signal Scanner)")
+    print("         Powered by ta library + yfinance")
+    print("=" * 60)
+
+    user_input = input("\n티커 입력 (여러 개는 쉼표로 구분, 예: AAPL,MSFT,NVDA): ").strip()
+    if not user_input:
+        print("티커가 입력되지 않았습니다. 종료합니다.")
+        return
+
+    tickers = [t.strip().upper() for t in user_input.split(',') if t.strip()]
+    period = input("조회 기간 (기본 1y, 예: 6mo/1y/2y/5y): ").strip() or "1y"
+
+    for ticker in tickers:
         try:
-            # 데이터 수집
-            df = download_data(ticker, cfg["period"])
-            print(f"  [OK] 데이터 수신: {len(df)}봉 ({df.index[0].date()} ~ {df.index[-1].date()})")
-
-            # 지표 계산
-            df = compute_indicators(df, cfg)
-            print(f"  [OK] 지표 계산 완료 (RSI, BB)")
-
-            # 신호 생성
-            df = generate_signals(df, cfg)
-
-            signal_count = df["BUY_SIGNAL"].sum()
-            print(f"  [OK] 매수 신호 발생: {signal_count}건")
-
-            # 결과 추출
-            result = extract_signal_rows(ticker, df)
-            if not result.empty:
-                all_results.append(result)
-
-        except ValueError as e:
-            print(f"  [SKIP] {ticker}: {e}")
-        except RuntimeError as e:
-            print(f"  [ERROR] {ticker}: {e}")
+            scan_ticker(ticker, period=period)
         except Exception as e:
-            print(f"  [UNEXPECTED] {ticker}: {type(e).__name__}: {e}")
+            print(f"\n  [ERROR] {ticker} 처리 중 오류: {e}")
 
-    if not all_results:
-        print("\n[결과] 매수 신호가 발생한 종목이 없습니다.")
-        return pd.DataFrame()
-
-    final_df = pd.concat(all_results).sort_index()
-    return final_df
+    print("\n" + "=" * 60)
+    print("  스캔 완료")
+    print("=" * 60)
 
 
-# ─────────────────────────────────────────────
-# 9. 진입점
-# ─────────────────────────────────────────────
 if __name__ == "__main__":
-
-    print("=" * 50)
-    print("  APEX MR Strategy — 과매도 반등 매수 신호 스캐너")
-    print("=" * 50)
-
-    results = run_strategy(CONFIG)
-
-    if not results.empty:
-        print("\n\n★ 최종 매수 신호 요약 ★")
-        print("=" * 80)
-        pd.set_option("display.max_columns", None)
-        pd.set_option("display.width", 120)
-        pd.set_option("display.float_format", "{:.2f}".format)
-        print(results.to_string())
-
-        # CSV 저장
-        out_path = "apex_mr_signals.csv"
-        results.to_csv(out_path)
-        print(f"\n[저장] {out_path}")
-
-    else:
-        print("\n해당 기간 내 조건을 충족하는 신호가 없습니다.")
-        print("CONFIG의 bb_proximity_pct 또는 div_rsi_min_rise 값을 완화해 보세요.")
+    main()
